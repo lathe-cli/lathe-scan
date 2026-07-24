@@ -2,6 +2,7 @@ package scan
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -331,6 +332,32 @@ func TestSynthesizeRoundTrip(t *testing.T) {
 	}
 	if p.metrics.Operations != len(routes) {
 		t.Errorf("operations = %d, want %d", p.metrics.Operations, len(routes))
+	}
+}
+
+func TestOperationID(t *testing.T) {
+	cases := map[[2]string]string{
+		{"GET", "/health"}:     "getHealth",
+		{"GET", "/users/{id}"}: "getUsersId",
+		{"POST", "/users"}:     "postUsers",
+		{"GET", "/"}:           "get",
+		{"DELETE", "/a-b/{x}"}: "deleteAbX",
+	}
+	for in, want := range cases {
+		if got := operationID(in[0], in[1]); got != want {
+			t.Errorf("operationID(%q,%q) = %q, want %q", in[0], in[1], got, want)
+		}
+	}
+}
+
+// Lathe drops operations without an operationId, so every synthesized op must
+// carry one or the generated CLI has zero commands.
+func TestSynthesizeEmitsOperationId(t *testing.T) {
+	draft := string(synthesizeOpenAPI("demo", "chi", []route{{"GET", "/users/{id}"}, {"POST", "/users"}}))
+	for _, want := range []string{"operationId: getUsersId", "operationId: postUsers"} {
+		if !strings.Contains(draft, want) {
+			t.Errorf("synth draft missing %q:\n%s", want, draft)
+		}
 	}
 }
 
