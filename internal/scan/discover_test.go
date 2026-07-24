@@ -3,6 +3,7 @@ package scan
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -46,6 +47,57 @@ func TestDiscoverSkipsIgnoredDirs(t *testing.T) {
 	}
 	if filepath.Base(got[0]) != "openapi.yaml" || filepath.Dir(got[0]) != root {
 		t.Errorf("discovered wrong file: %s", got[0])
+	}
+}
+
+func TestDiscoverSkipsTestAndSampleDirs(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "openapi.yaml", specOpenAPI) // the real one
+	for _, d := range []string{"samples", "sample", "test", "tests", "__tests__", "fixtures", "fixture", "e2e", "third_party", "generated"} {
+		writeFile(t, root, d+"/openapi.yaml", specOpenAPI) // scaffolding — must be skipped
+	}
+	got := discover(root)
+	if len(got) != 1 || filepath.Dir(got[0]) != root {
+		t.Fatalf("want only the root spec, got %d: %v", len(got), got)
+	}
+}
+
+// Same API in json+yaml or copied to a second dir → one canonical source, even
+// though bytes (and content hashes) differ.
+func TestDedupBySignature(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "openapi.yaml", specOpenAPI)
+	// Same operations, different bytes (title + server changed).
+	variant := strings.NewReplacer("Billing API", "Billing API v2", "api.acme.com", "api2.acme.com").Replace(specOpenAPI)
+	writeFile(t, root, "docs/openapi.yaml", variant)
+
+	cands, parsed := parseCandidates(discover(root), root)
+	dedupCandidates(cands, parsed)
+	nonDup := 0
+	for _, c := range cands {
+		if c.DuplicateOf == "" {
+			nonDup++
+		}
+	}
+	if nonDup != 1 {
+		t.Errorf("same-API different-bytes specs should dedup to 1, got %d (%+v)", nonDup, cands)
+	}
+}
+
+func TestDedupSignatureKeepsDistinctAPIs(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "a/openapi.yaml", specOpenAPI)
+	writeFile(t, root, "b/openapi.yaml", strings.ReplaceAll(specOpenAPI, "invoices", "orders")) // different paths
+	cands, parsed := parseCandidates(discover(root), root)
+	dedupCandidates(cands, parsed)
+	nonDup := 0
+	for _, c := range cands {
+		if c.DuplicateOf == "" {
+			nonDup++
+		}
+	}
+	if nonDup != 2 {
+		t.Errorf("distinct APIs must not be deduped, got %d canonical", nonDup)
 	}
 }
 
