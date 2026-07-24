@@ -57,6 +57,15 @@ func buildProtoSource(files []string, root string, git *gitOrigin) (*builtSource
 		Reason:  fmt.Sprintf("proto, %d services, %d rpc, %d google.api.http", services, methods, httpMethods),
 	}
 
+	// Lathe generates commands only for RPCs with a google.api.http annotation.
+	// A tree with none produces zero commands and, worse, fails `lathe specsync`
+	// (protoc chokes on unresolved imports) which aborts the whole bootstrap. So
+	// report it as a candidate but do not emit it as a source.
+	if httpMethods == 0 {
+		cand.Reason += "; not emitted (no google.api.http)"
+		return nil, cand
+	}
+
 	var entries []string
 	for i, info := range infos {
 		if info.services > 0 {
@@ -105,18 +114,10 @@ func buildProtoSource(files []string, root string, git *gitOrigin) (*builtSource
 	b.yc.Proto = block
 
 	var gaps []Gap
-	if httpMethods == 0 {
-		gaps = append(gaps, Gap{Kind: gapProtoNoHTTP, Scope: "source",
-			Message: "no google.api.http annotations found; Lathe generates commands only for annotated RPCs, so this would emit zero commands", Blocking: true})
-	} else {
-		gaps = append(gaps, Gap{Kind: gapProtoImports, Scope: "source",
-			Message: "staging and import roots were inferred statically; run `lathe sync-specs` (needs protoc) to verify the tree compiles", Blocking: false})
-	}
+	gaps = append(gaps, Gap{Kind: gapProtoImports, Scope: "source",
+		Message: "staging and import roots were inferred statically; run `lathe sync-specs` (needs protoc) to verify the tree compiles", Blocking: false})
 
 	conf := confMedium
-	if httpMethods == 0 {
-		conf = confLow
-	}
 	b.report = &SourceReport{
 		Level: "L1", Backend: "proto",
 		WouldEmitCommands: httpMethods,

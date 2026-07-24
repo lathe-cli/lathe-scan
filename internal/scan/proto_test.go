@@ -143,20 +143,13 @@ func TestExecuteProtoWithHTTP(t *testing.T) {
 	}
 }
 
-func TestExecuteProtoNoHTTPBlocks(t *testing.T) {
+// A proto tree with no google.api.http RPCs generates nothing and breaks
+// bootstrap, so it is not emitted as a source (report-only candidate).
+func TestExecuteProtoNoHTTPNotEmitted(t *testing.T) {
 	in := inputDir(t, "api.proto", protoNoHTTP)
-	out := t.TempDir()
-	if err := Execute(Options{Inputs: []string{in}, Out: out}); err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-	src := readReport(t, out).Sources[0]
-	if src.WouldEmitCommands != 0 {
-		t.Errorf("wouldEmit = %d, want 0", src.WouldEmitCommands)
-	}
-	if src.Confidence != confLow {
-		t.Errorf("confidence = %q, want low", src.Confidence)
-	}
-	if !hasGap(src.Gaps, gapProtoNoHTTP, true) {
-		t.Errorf("expected blocking proto-no-http gap, got %+v", src.Gaps)
+	err := Execute(Options{Inputs: []string{in}, Out: t.TempDir()})
+	var noSrc ErrNoSources
+	if err == nil || !asNoSources(err, &noSrc) {
+		t.Fatalf("want ErrNoSources (proto without http not emitted), got %v", err)
 	}
 }
