@@ -236,8 +236,8 @@ func writeJSON(path string, v any) error {
 func renderGaps(report *Report) string {
 	var b strings.Builder
 	b.WriteString("# lathe-scan gaps\n\n")
-	b.WriteString(fmt.Sprintf("%d input(s), %d source(s), %d usable.\n\n",
-		report.Summary.Inputs, report.Summary.Sources, report.Summary.Usable))
+	fmt.Fprintf(&b, "%d input(s), %d source(s), %d usable.\n\n",
+		report.Summary.Inputs, report.Summary.Sources, report.Summary.Usable)
 
 	b.WriteString("## Sources\n\n")
 	for _, s := range report.Sources {
@@ -245,13 +245,13 @@ func renderGaps(report *Report) string {
 		if s.Recommended {
 			star = " (recommended)"
 		}
-		b.WriteString(fmt.Sprintf("- **%s**%s — backend `%s`, confidence `%s`, %d command(s)\n",
-			s.Name, star, s.Backend, s.Confidence, s.WouldEmitCommands))
+		fmt.Fprintf(&b, "- **%s**%s — backend `%s`, confidence `%s`, %d command(s)\n",
+			s.Name, star, s.Backend, s.Confidence, s.WouldEmitCommands)
 		if s.Origin != nil {
 			if s.Origin.Type == "repo_url" {
-				b.WriteString(fmt.Sprintf("  - origin: `%s` @ `%s` (%s)\n", s.Origin.RepoURL, s.Origin.PinnedTag, s.Origin.RefKind))
+				fmt.Fprintf(&b, "  - origin: `%s` @ `%s` (%s)\n", s.Origin.RepoURL, s.Origin.PinnedTag, s.Origin.RefKind)
 			} else {
-				b.WriteString(fmt.Sprintf("  - origin: local_path `%s`\n", s.Origin.LocalPath))
+				fmt.Fprintf(&b, "  - origin: local_path `%s`\n", s.Origin.LocalPath)
 			}
 		}
 	}
