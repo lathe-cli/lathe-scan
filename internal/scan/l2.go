@@ -403,6 +403,7 @@ var rePathParam = regexp.MustCompile(`\{([^}]+)\}`)
 
 func synthesizeOpenAPI(title, extractor string, routes []route) []byte {
 	paths := map[string]any{}
+	usedIDs := map[string]bool{}
 	for _, r := range routes {
 		item, ok := paths[r.path].(map[string]any)
 		if !ok {
@@ -410,6 +411,10 @@ func synthesizeOpenAPI(title, extractor string, routes []route) []byte {
 			paths[r.path] = item
 		}
 		op := map[string]any{
+			// Lathe drops operations without an operationId and aborts codegen on
+			// colliding command names, so each synthesized id must be present and
+			// unique (paths like /groups and /Groups normalize to the same base).
+			"operationId":        uniqueOpID(operationID(r.method, r.path), usedIDs),
 			"x-lathe-confidence": "medium",
 			"x-lathe-gaps":       []any{"body", "response", "auth"},
 			"responses": map[string]any{
@@ -439,6 +444,44 @@ func synthesizeOpenAPI(title, extractor string, routes []route) []byte {
 		return []byte("openapi: 3.0.3\n")
 	}
 	return data
+}
+
+// operationID builds a unique camelCase id like "getUsersId" from a method and
+// path. Lathe derives the command name from it (camel → kebab), so a synth op
+// without one would be dropped at codegen.
+func operationID(method, path string) string {
+	var b strings.Builder
+	b.WriteString(strings.ToLower(method))
+	for _, seg := range strings.Split(path, "/") {
+		s := alnumOnly(strings.Trim(seg, "{}"))
+		if s == "" {
+			continue
+		}
+		b.WriteString(strings.ToUpper(s[:1]))
+		b.WriteString(s[1:])
+	}
+	return b.String()
+}
+
+// uniqueOpID keeps a synthesized operationId unique within one spec so Lathe's
+// command-name derivation cannot collide.
+func uniqueOpID(base string, used map[string]bool) string {
+	id := base
+	for i := 2; used[id]; i++ {
+		id = fmt.Sprintf("%s%d", base, i)
+	}
+	used[id] = true
+	return id
+}
+
+func alnumOnly(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func pathParams(path string) []any {

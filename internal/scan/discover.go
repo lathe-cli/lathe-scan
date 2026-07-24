@@ -14,7 +14,14 @@ import (
 var ignoreDirs = map[string]bool{
 	"node_modules": true, "vendor": true, ".venv": true, "venv": true,
 	"dist": true, "build": true, "target": true, ".git": true,
-	"site-packages": true, ".tox": true, ".cache": true, "testdata": true,
+	"site-packages": true, ".tox": true, ".cache": true,
+	// Test scaffolding and generated/sample trees: a spec found here is fixture
+	// data, not the repo's own API contract. Excluding them is the dominant
+	// precision win on real repos (e.g. openapi-generator ships 120+ sample specs).
+	"testdata": true, "test": true, "tests": true, "__tests__": true,
+	"e2e": true, "fixture": true, "fixtures": true,
+	"sample": true, "samples": true, "third_party": true, "third-party": true,
+	"generated": true,
 }
 
 var specDirHints = map[string]bool{
@@ -246,15 +253,24 @@ func dedupCandidates(cands []Candidate, parsedByPath map[string]*parsed) {
 	seen := map[string]string{}
 	for i := range cands {
 		c := &cands[i]
-		if !c.Parsed || c.ContentHash == "" {
+		if !c.Parsed {
 			continue
 		}
-		if canon, ok := seen[c.ContentHash]; ok {
+		// Prefer the operation-signature key so json/yaml copies of one API
+		// collapse; fall back to content hash when there are no operations.
+		key := c.ContentHash
+		if p := parsedByPath[c.Path]; p != nil && p.opsig != "" {
+			key = "sig:" + p.opsig
+		}
+		if key == "" {
+			continue
+		}
+		if canon, ok := seen[key]; ok {
 			c.DuplicateOf = canon
 			delete(parsedByPath, c.Path)
 			continue
 		}
-		seen[c.ContentHash] = c.Path
+		seen[key] = c.Path
 	}
 }
 

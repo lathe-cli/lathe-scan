@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -25,6 +26,7 @@ type parsed struct {
 	hostname    string
 	hasExtRefs  bool
 	contentHash string
+	opsig       string // hash of the sorted METHOD+path set; dedups json/yaml copies
 }
 
 // Lenient like Lathe: minimal structs, unknown fields ignored. (nil, nil) when
@@ -71,6 +73,7 @@ func parseOAS3(data []byte, hash string) (*parsed, error) {
 	p.metrics.Paths = len(doc.Paths)
 	p.metrics.Schemas = len(doc.Components.Schemas)
 	p.metrics.Operations = countOperations(doc.Paths)
+	p.opsig = operationSignature(doc.Paths)
 	p.wouldEmit = p.metrics.Operations
 	if len(doc.Servers) > 0 {
 		p.hostname = hostFromURL(doc.Servers[0].URL)
@@ -95,10 +98,32 @@ func parseSwagger2(data []byte, hash string) (*parsed, error) {
 	p.metrics.Paths = len(doc.Paths)
 	p.metrics.Schemas = len(doc.Definitions)
 	p.metrics.Operations = countOperations(doc.Paths)
+	p.opsig = operationSignature(doc.Paths)
 	p.wouldEmit = p.metrics.Operations
 	p.hostname = strings.TrimSpace(doc.Host)
 	p.hasExtRefs = hasExternalRefs(data)
 	return p, nil
+}
+
+// operationSignature is a stable hash of the sorted METHOD+path set. Two files
+// describing the same API (e.g. swagger.json and swagger.yaml, or a copy in a
+// second dir) share a signature even though their bytes differ, so dedup by
+// signature collapses them while genuinely distinct monorepo APIs stay separate.
+func operationSignature(paths map[string]map[string]yaml.Node) string {
+	var ops []string
+	for path, item := range paths {
+		for method := range item {
+			if httpMethods[strings.ToLower(method)] {
+				ops = append(ops, strings.ToLower(method)+" "+path)
+			}
+		}
+	}
+	if len(ops) == 0 {
+		return ""
+	}
+	sort.Strings(ops)
+	sum := sha256.Sum256([]byte(strings.Join(ops, "\n")))
+	return hex.EncodeToString(sum[:])
 }
 
 // Mirrors Lathe: one command per HTTP-method operation.
