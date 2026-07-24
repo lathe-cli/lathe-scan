@@ -403,6 +403,7 @@ var rePathParam = regexp.MustCompile(`\{([^}]+)\}`)
 
 func synthesizeOpenAPI(title, extractor string, routes []route) []byte {
 	paths := map[string]any{}
+	usedIDs := map[string]bool{}
 	for _, r := range routes {
 		item, ok := paths[r.path].(map[string]any)
 		if !ok {
@@ -410,9 +411,10 @@ func synthesizeOpenAPI(title, extractor string, routes []route) []byte {
 			paths[r.path] = item
 		}
 		op := map[string]any{
-			// Lathe drops operations without an operationId, so a synthesized spec
-			// must carry one or it generates zero commands.
-			"operationId":        operationID(r.method, r.path),
+			// Lathe drops operations without an operationId and aborts codegen on
+			// colliding command names, so each synthesized id must be present and
+			// unique (paths like /groups and /Groups normalize to the same base).
+			"operationId":        uniqueOpID(operationID(r.method, r.path), usedIDs),
 			"x-lathe-confidence": "medium",
 			"x-lathe-gaps":       []any{"body", "response", "auth"},
 			"responses": map[string]any{
@@ -459,6 +461,17 @@ func operationID(method, path string) string {
 		b.WriteString(s[1:])
 	}
 	return b.String()
+}
+
+// uniqueOpID keeps a synthesized operationId unique within one spec so Lathe's
+// command-name derivation cannot collide.
+func uniqueOpID(base string, used map[string]bool) string {
+	id := base
+	for i := 2; used[id]; i++ {
+		id = fmt.Sprintf("%s%d", base, i)
+	}
+	used[id] = true
+	return id
 }
 
 func alnumOnly(s string) string {

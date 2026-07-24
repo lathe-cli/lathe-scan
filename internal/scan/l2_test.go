@@ -350,6 +350,17 @@ func TestOperationID(t *testing.T) {
 	}
 }
 
+// Paths that normalize to the same operationId base (/groups vs /Groups) must
+// still get distinct ids, or Lathe aborts codegen on the command-name collision.
+func TestUniqueOperationIds(t *testing.T) {
+	used := map[string]bool{}
+	a := uniqueOpID(operationID("GET", "/groups"), used)
+	b := uniqueOpID(operationID("GET", "/Groups"), used)
+	if a != "getGroups" || b != "getGroups2" || a == b {
+		t.Errorf("collision not resolved: a=%q b=%q", a, b)
+	}
+}
+
 // Lathe drops operations without an operationId, so every synthesized op must
 // carry one or the generated CLI has zero commands.
 func TestSynthesizeEmitsOperationId(t *testing.T) {
