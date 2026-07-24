@@ -17,28 +17,50 @@ const (
 	gapsFileName    = "GAPS.md"
 )
 
-// sourcesFile mirrors the top-level Lathe sourceconfig shape. Foreign sources
-// (backends we do not model, e.g. proto/graphql) are preserved as raw nodes on
-// --merge.
+// Foreign sources (backends we did not build this run) are preserved as raw
+// nodes on --merge.
 type sourcesFile struct {
 	Sources map[string]yaml.Node `yaml:"sources"`
 }
 
-// ycSource mirrors Lathe's Source yaml tags exactly for the backends this slice
-// emits (openapi3, swagger). omitempty keeps mutually-exclusive origin fields off.
+// ycSource mirrors Lathe's Source yaml tags. omitempty keeps mutually-exclusive
+// origin fields and non-selected backend blocks off.
 type ycSource struct {
-	DisplayName     string      `yaml:"display_name,omitempty"`
-	DefaultHostname string      `yaml:"default_hostname,omitempty"`
-	RepoURL         string      `yaml:"repo_url,omitempty"`
-	PinnedTag       string      `yaml:"pinned_tag,omitempty"`
-	LocalPath       string      `yaml:"local_path,omitempty"`
-	Backend         string      `yaml:"backend"`
-	Swagger         *filesBlock `yaml:"swagger,omitempty"`
-	OpenAPI3        *filesBlock `yaml:"openapi3,omitempty"`
+	DisplayName     string        `yaml:"display_name,omitempty"`
+	DefaultHostname string        `yaml:"default_hostname,omitempty"`
+	RepoURL         string        `yaml:"repo_url,omitempty"`
+	PinnedTag       string        `yaml:"pinned_tag,omitempty"`
+	LocalPath       string        `yaml:"local_path,omitempty"`
+	Backend         string        `yaml:"backend"`
+	Swagger         *filesBlock   `yaml:"swagger,omitempty"`
+	Proto           *protoBlock   `yaml:"proto,omitempty"`
+	OpenAPI3        *filesBlock   `yaml:"openapi3,omitempty"`
+	GraphQL         *graphqlBlock `yaml:"graphql,omitempty"`
 }
 
 type filesBlock struct {
 	Files []string `yaml:"files"`
+}
+
+type protoBlock struct {
+	Staging     []stagingEntry `yaml:"staging"`
+	Entries     []string       `yaml:"entries"`
+	ImportRoots []string       `yaml:"import_roots,omitempty"`
+}
+
+type stagingEntry struct {
+	From string `yaml:"from"`
+	To   string `yaml:"to"`
+}
+
+type graphqlBlock struct {
+	Schema string        `yaml:"schema"`
+	Expose graphqlExpose `yaml:"expose"`
+}
+
+type graphqlExpose struct {
+	Queries   []string `yaml:"queries,omitempty"`
+	Mutations []string `yaml:"mutations,omitempty"`
 }
 
 func loadExistingSources(path string) (*sourcesFile, error) {
@@ -72,30 +94,16 @@ func writeOutputs(opts Options, existing *sourcesFile, built []*builtSource, rep
 	}
 
 	for _, b := range built {
-		yc := &ycSource{
-			DefaultHostname: b.hostname,
-			Backend:         b.backend,
-		}
-		switch b.origin.Type {
-		case "repo_url":
-			yc.RepoURL = b.origin.RepoURL
-			yc.PinnedTag = b.origin.PinnedTag
-		default:
-			yc.LocalPath = b.Name
+		if b.origin.Type == "local_path" {
+			b.yc.LocalPath = b.Name
+			b.origin.LocalPath = b.Name
 			if err := copyLocal(b, filepath.Join(opts.Out, b.Name)); err != nil {
 				return err
 			}
-			b.origin.LocalPath = b.Name
-		}
-		switch b.backend {
-		case "openapi3":
-			yc.OpenAPI3 = &filesBlock{Files: b.files}
-		case "swagger":
-			yc.Swagger = &filesBlock{Files: b.files}
 		}
 
 		var node yaml.Node
-		if err := node.Encode(yc); err != nil {
+		if err := node.Encode(b.yc); err != nil {
 			return fmt.Errorf("encode source %q: %w", b.Name, err)
 		}
 		final[b.Name] = node
@@ -105,7 +113,7 @@ func writeOutputs(opts Options, existing *sourcesFile, built []*builtSource, rep
 		report.Sources = append(report.Sources, *b.report)
 	}
 
-	fillReportMeta(opts, built, report)
+	fillReportMeta(built, report)
 
 	if err := writeYAML(filepath.Join(opts.Out, sourcesFileName), &sourcesFile{Sources: final}); err != nil {
 		return err
@@ -126,6 +134,7 @@ func writeOutputs(opts Options, existing *sourcesFile, built []*builtSource, rep
 }
 
 func prepareOutDir(opts Options, nBuilt int) error {
+	_ = nBuilt
 	info, err := os.Stat(opts.Out)
 	switch {
 	case os.IsNotExist(err):
@@ -149,24 +158,38 @@ func prepareOutDir(opts Options, nBuilt int) error {
 }
 
 func copyLocal(b *builtSource, destDir string) error {
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
+	for _, c := range b.copies {
+		data, err := os.ReadFile(c.absFrom)
+		if err != nil {
+			return fmt.Errorf("read source file %s: %w", c.absFrom, err)
+		}
+		if err := writeUnder(destDir, c.relTo, data); err != nil {
+			return err
+		}
+	}
+	for _, s := range b.synth {
+		if err := writeUnder(destDir, s.relTo, s.content); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeUnder(destDir, relTo string, data []byte) error {
+	dest := filepath.Join(destDir, filepath.FromSlash(relTo))
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return err
 	}
-	data, err := os.ReadFile(b.copyFrom)
-	if err != nil {
-		return fmt.Errorf("read source file %s: %w", b.copyFrom, err)
-	}
-	dest := filepath.Join(destDir, b.copyTo)
 	if err := os.WriteFile(dest, data, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", dest, err)
 	}
 	return nil
 }
 
-func fillReportMeta(opts Options, built []*builtSource, report *Report) {
+func fillReportMeta(built []*builtSource, report *Report) {
 	usable := 0
 	for i := range report.Sources {
-		if report.Sources[i].Confidence != confLow || report.Sources[i].WouldEmitCommands > 0 {
+		if report.Sources[i].WouldEmitCommands > 0 && !hasBlocking(report.Sources[i].Gaps) {
 			usable++
 		}
 	}
@@ -176,7 +199,6 @@ func fillReportMeta(opts Options, built []*builtSource, report *Report) {
 		Usable:   usable,
 		ExitCode: exitCodeFor(built),
 	}
-	// Selected names per input.
 	byInput := map[string][]string{}
 	for _, b := range built {
 		byInput[b.fromInput] = append(byInput[b.fromInput], b.Name)
@@ -234,7 +256,6 @@ func renderGaps(report *Report) string {
 		}
 	}
 
-	// Blocking gaps first.
 	var blocking, advisory []string
 	for _, s := range report.Sources {
 		for _, g := range s.Gaps {

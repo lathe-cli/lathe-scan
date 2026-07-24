@@ -10,7 +10,7 @@ import (
 	"github.com/lathe-cli/lathe-scan/internal/scan"
 )
 
-// Exit codes are part of the CLI contract (see plan-scan.md):
+// Exit codes are part of the CLI contract:
 //
 //	0 at least one usable source written
 //	1 usage error
@@ -23,7 +23,6 @@ const (
 	exitWrite     = 3
 )
 
-// Run parses args and executes the scan, returning a process exit code.
 func Run(args []string) int {
 	var opts scan.Options
 

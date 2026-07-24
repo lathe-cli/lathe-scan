@@ -1,9 +1,7 @@
-// Package scan discovers API specs across one or more repo inputs and emits a
-// draft Lathe sources.yaml, a report.json audit, and a human GAPS.md.
+// Package scan discovers API specs and emits a draft Lathe sources.yaml.
 //
-// It never imports Lathe internals; instead it mirrors Lathe's lenient parse
-// and command-emit rules so that "lathe-scan marked this usable" implies "Lathe
-// will load and generate from it".
+// It never imports Lathe internals; it mirrors Lathe's lenient parse and
+// command-emit rules so "usable" here implies Lathe will load and generate.
 package scan
 
 import (
@@ -13,7 +11,6 @@ import (
 	"strings"
 )
 
-// Options is the parsed CLI invocation.
 type Options struct {
 	Inputs []string
 	Out    string
@@ -24,18 +21,17 @@ type Options struct {
 	JSON   bool
 }
 
-// ErrNoSources maps to exit code 2: nothing usable across all inputs.
+// ErrNoSources maps to exit code 2.
 type ErrNoSources struct{ msg string }
 
 func (e ErrNoSources) Error() string { return e.msg }
 
-// ErrWrite maps to exit code 3: output could not be written.
+// ErrWrite maps to exit code 3.
 type ErrWrite struct{ err error }
 
 func (e ErrWrite) Error() string { return "write output: " + e.err.Error() }
 func (e ErrWrite) Unwrap() error { return e.err }
 
-// Execute runs the full scan pipeline for the given options.
 func Execute(opts Options) error {
 	if strings.TrimSpace(opts.Out) == "" {
 		return fmt.Errorf("--out is required")
@@ -47,7 +43,7 @@ func Execute(opts Options) error {
 	report := &Report{SchemaVersion: 1, ToolVersion: version}
 	usedNames := map[string]bool{}
 
-	// --merge: keep foreign sources already present in the output.
+	// --merge keeps foreign sources already present in the output.
 	var existing *sourcesFile
 	if opts.Merge {
 		var err error
@@ -60,13 +56,22 @@ func Execute(opts Options) error {
 		}
 	}
 
-	// Deterministic input order.
 	inputs := append([]string(nil), opts.Inputs...)
 	sort.Strings(inputs)
 
 	var built []*builtSource
 	for _, in := range inputs {
-		ir, err := scanInput(in, opts)
+		scanPath, kindHint := in, ""
+		if isZipInput(in) {
+			dir, cleanup, err := extractZip(in)
+			if err != nil {
+				report.Inputs = append(report.Inputs, InputReport{Input: in, Kind: "zip", Error: err.Error()})
+				continue
+			}
+			defer cleanup()
+			scanPath, kindHint = dir, "zip"
+		}
+		ir, err := scanInput(in, scanPath, kindHint, opts)
 		if err != nil {
 			report.Inputs = append(report.Inputs, InputReport{Input: in, Error: err.Error()})
 			continue
@@ -82,12 +87,8 @@ func Execute(opts Options) error {
 		built[0].baseName = opts.Name
 	}
 
-	// Deterministic naming: order by (baseName, source path), then resolve collisions.
 	sort.Slice(built, func(i, j int) bool {
-		if built[i].baseName != built[j].baseName {
-			return built[i].baseName < built[j].baseName
-		}
-		return built[i].copyFrom+strings.Join(built[i].files, ",") < built[j].copyFrom+strings.Join(built[j].files, ",")
+		return built[i].sortKey() < built[j].sortKey()
 	})
 	for _, b := range built {
 		b.Name = uniqueName(b.baseName, usedNames)
@@ -104,7 +105,6 @@ func Execute(opts Options) error {
 	return nil
 }
 
-// uniqueName resolves collisions deterministically with a numeric suffix.
 func uniqueName(base string, used map[string]bool) string {
 	base = sanitizeName(base)
 	if base == "" {

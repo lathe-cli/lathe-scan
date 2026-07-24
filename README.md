@@ -70,9 +70,22 @@ and `report.json` (no timestamps; the only version marker is `tool_version`).
 
 | Level | Scope | Status |
 |-------|-------|--------|
-| **L1** | Find & select existing API specs (OpenAPI 3, Swagger 2, Proto, GraphQL, Postman) | OpenAPI 3 + Swagger 2 implemented; Proto/GraphQL/Postman planned |
-| **L2** | Allowlisted static framework extractors (FastAPI, Spring, NestJS, Gin, Echo, Chi, Express/Fastify) → honest OpenAPI 3 draft | Planned |
-| **L3** | Experimental extractors, Postman→OpenAPI normalization | Not started |
+| **L1** | Find & select existing API specs (OpenAPI 3, Swagger 2, Proto, GraphQL) and convert Postman collections | Implemented |
+| **L2** | Allowlisted static framework extractors → honest OpenAPI 3 draft | FastAPI, Flask, Django, Spring, NestJS, Express, Fastify, Gin, Echo, Chi, Rails, Laravel, ASP.NET, Ktor, Actix, Axum |
+| **L3** | Additional-language extractors, deeper inference | Ongoing |
+
+Inputs may be repo directories or `.zip` archives (extracted to a private temp
+dir with Zip-Slip / symlink / zip-bomb guards). Multi-file OpenAPI/Swagger specs
+with external `$ref`s are bundled into one self-contained spec, since Lathe keeps
+external file refs raw. Proto staging roots are inferred so package-relative
+imports resolve.
+
+Proto and GraphQL notes: GraphQL emits `graphql.schema` plus an explicit `expose`
+policy listing every discovered query/mutation (Lathe refuses to expose the whole
+schema) — trim it before generating. Proto emits inferred `staging`/`entries`;
+because Lathe only generates commands for RPCs with a `google.api.http` annotation
+and protoc-compilation can't be checked offline, proto sources are capped at
+medium confidence with a verification gap.
 
 L2 never starts the application, imports modules, runs builds, or executes any
 scanned code — it is static analysis only. See [docs/DESIGN.md](docs/DESIGN.md)
