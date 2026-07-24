@@ -10,14 +10,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// httpMethods are the path-item keys Lathe turns into commands. Anything else
-// in a path item (parameters, $ref, servers, summary) is not an operation.
+// Path-item keys Lathe turns into commands; parameters/$ref/servers/summary
+// are not operations.
 var httpMethods = map[string]bool{
 	"get": true, "put": true, "post": true, "delete": true,
 	"patch": true, "options": true, "head": true, "trace": true,
 }
 
-// parsed is the outcome of parsing one candidate file.
 type parsed struct {
 	format      string
 	title       string
@@ -28,9 +27,8 @@ type parsed struct {
 	contentHash string
 }
 
-// parseSpec detects and parses OpenAPI 3 / Swagger 2 leniently, the same way
-// Lathe does: unmarshal into minimal structs and ignore unknown fields. Returns
-// (nil, "") when the file is not a recognized Lathe-native spec.
+// Lenient like Lathe: minimal structs, unknown fields ignored. (nil, nil) when
+// not a recognized Lathe-native spec.
 func parseSpec(data []byte) (*parsed, error) {
 	sum := sha256.Sum256(data)
 	hash := "sha256:" + hex.EncodeToString(sum[:])
@@ -103,7 +101,7 @@ func parseSwagger2(data []byte, hash string) (*parsed, error) {
 	return p, nil
 }
 
-// countOperations mirrors Lathe: one command per HTTP-method operation.
+// Mirrors Lathe: one command per HTTP-method operation.
 func countOperations(paths map[string]map[string]yaml.Node) int {
 	n := 0
 	for _, item := range paths {
@@ -128,9 +126,8 @@ func hostFromURL(raw string) string {
 	return u.Host
 }
 
-// hasExternalRefs reports whether any $ref points outside this document (a file
-// path rather than a "#/..." local fragment). Such a spec needs its reference
-// closure resolved before Lathe can load it from a single copied file.
+// External $refs (not "#/...") need the reference closure resolved before
+// Lathe can load from a single copied file.
 func hasExternalRefs(data []byte) bool {
 	var root any
 	if err := yaml.Unmarshal(data, &root); err != nil {

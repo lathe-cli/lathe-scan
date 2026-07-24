@@ -25,7 +25,6 @@ func readSources(t *testing.T, path string) map[string]map[string]any {
 	return f.Sources
 }
 
-// inputDir writes a spec into a fresh non-git temp dir and returns the dir.
 func inputDir(t *testing.T, rel, spec string) string {
 	t.Helper()
 	d := t.TempDir()
@@ -60,11 +59,9 @@ func TestExecuteLocalSource(t *testing.T) {
 	if s["default_hostname"] != "api.acme.com" {
 		t.Errorf("default_hostname = %v", s["default_hostname"])
 	}
-	// The spec file must be copied under <out>/<name>/.
 	if _, err := os.Stat(filepath.Join(out, "billing-api", "openapi.yaml")); err != nil {
 		t.Errorf("copied spec missing: %v", err)
 	}
-	// report.json + GAPS.md written.
 	for _, f := range []string{reportFileName, gapsFileName} {
 		if _, err := os.Stat(filepath.Join(out, f)); err != nil {
 			t.Errorf("%s missing: %v", f, err)
@@ -191,7 +188,7 @@ func TestExecuteRefusesNonEmptyOut(t *testing.T) {
 
 func TestExecuteMergePreservesForeign(t *testing.T) {
 	out := t.TempDir()
-	// A pre-existing graphql source (a backend this slice does not emit).
+	// Foreign backend this run does not emit; --merge must preserve it.
 	foreign := `sources:
   legacy-graph:
     repo_url: https://github.com/acme/g.git
@@ -216,14 +213,11 @@ func TestExecuteMergePreservesForeign(t *testing.T) {
 	if _, ok := srcs["billing-api"]; !ok {
 		t.Error("--merge did not add the new source")
 	}
-	// Foreign graphql block must survive intact.
 	g, _ := srcs["legacy-graph"]["graphql"].(map[string]any)
 	if g == nil || g["schema"] != "schema.graphql" {
 		t.Errorf("foreign graphql block corrupted: %v", srcs["legacy-graph"])
 	}
 }
-
-// helpers
 
 func readReport(t *testing.T, out string) *Report {
 	t.Helper()
@@ -236,6 +230,18 @@ func readReport(t *testing.T, out string) *Report {
 		t.Fatalf("parse report: %v", err)
 	}
 	return &r
+}
+
+func firstSource(t *testing.T, sourcesPath string) map[string]any {
+	t.Helper()
+	srcs := readSources(t, sourcesPath)
+	if len(srcs) != 1 {
+		t.Fatalf("want exactly 1 source, got %d: %v", len(srcs), srcs)
+	}
+	for _, v := range srcs {
+		return v
+	}
+	return nil
 }
 
 func hasGap(gaps []Gap, kind string, blocking bool) bool {

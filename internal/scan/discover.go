@@ -9,48 +9,27 @@ import (
 	"strings"
 )
 
-// ignoreDirs are dependency/build/vendored trees skipped by default. Specs
-// shipped by dependencies are the main source of false positives, so excluding
-// them is a correctness requirement, not an optimization.
+// Dependency/build trees are skipped: specs shipped by deps are the main false
+// positives, so this is a correctness requirement, not an optimization.
 var ignoreDirs = map[string]bool{
 	"node_modules": true, "vendor": true, ".venv": true, "venv": true,
 	"dist": true, "build": true, "target": true, ".git": true,
 	"site-packages": true, ".tox": true, ".cache": true, "testdata": true,
 }
 
-// specDirHints are directories where specs commonly live even without a
-// spec-like filename.
 var specDirHints = map[string]bool{
 	"docs": true, "api": true, "openapi": true, "spec": true, "apidocs": true,
 }
 
-const maxSpecBytes = 32 << 20 // 32 MiB guard against pathological files
+const maxSpecBytes = 32 << 20 // guard against pathological files
 
-// builtSource is a fully resolved source ready to write into sources.yaml.
-type builtSource struct {
-	Name      string // assigned during collision resolution
-	baseName  string
-	fromInput string // original input arg this source came from
-
-	backend  string
-	origin   *Origin
-	hostname string
-	files    []string // paths recorded in the backend block
-	copyFrom string   // abs path to copy for local_path sources ("" for repo_url)
-	copyTo   string   // basename under <out>/<name>/ for local_path sources
-
-	report *SourceReport
-}
-
-// inputResult is what one input contributed.
 type inputResult struct {
 	report  InputReport
 	sources []*builtSource
 }
 
-// scanInput discovers, parses, dedups, and builds sources for one input.
-func scanInput(input string, opts Options) (*inputResult, error) {
-	abs, err := filepath.Abs(input)
+func scanInput(input, scanPath, kindHint string, opts Options) (*inputResult, error) {
+	abs, err := filepath.Abs(scanPath)
 	if err != nil {
 		return nil, fmt.Errorf("resolve %q: %w", input, err)
 	}
@@ -59,23 +38,17 @@ func scanInput(input string, opts Options) (*inputResult, error) {
 		return nil, fmt.Errorf("stat %q: %w", input, err)
 	}
 	if !info.IsDir() {
-		if strings.HasSuffix(strings.ToLower(abs), ".zip") {
-			return nil, fmt.Errorf("zip input is not yet supported: %s", input)
-		}
 		return nil, fmt.Errorf("input is not a directory: %s", input)
 	}
 
-	git := detectGitOrigin(abs)
-	kind := "dir"
-	root := abs
-	if git != nil {
-		kind = "git"
-		root = git.root
+	// Zip is an extracted snapshot: always local_path, never a pinnable repo.
+	var git *gitOrigin
+	kind, root := "dir", abs
+	if kindHint == "zip" {
+		kind = "zip"
+	} else if git = detectGitOrigin(abs); git != nil {
+		kind, root = "git", git.root
 	}
-
-	files := discover(abs)
-	cands, parsedByPath := parseCandidates(files, root)
-	dedupCandidates(cands, parsedByPath)
 
 	ir := &inputResult{report: InputReport{Input: input, Kind: kind}}
 	if git != nil {
@@ -83,32 +56,110 @@ func scanInput(input string, opts Options) (*inputResult, error) {
 	} else {
 		ir.report.Origin = &Origin{Type: "local_path", LocalPath: abs}
 	}
-	ir.report.Candidates = cands
 
-	// Build a source per usable, non-duplicate candidate.
-	var best *builtSource
-	bestScore := -1
+	cands, parsedByPath := parseCandidates(discover(abs), root)
+	dedupCandidates(cands, parsedByPath)
+	ir.report.Candidates = append(ir.report.Candidates, cands...)
 	for i := range cands {
 		c := &cands[i]
 		if !c.Parsed || c.DuplicateOf != "" {
 			continue
 		}
-		p := parsedByPath[c.Path]
-		b := buildSource(c, p, root, abs, git, opts)
+		b := buildSource(c, parsedByPath[c.Path], root, git)
 		b.fromInput = input
 		ir.sources = append(ir.sources, b)
-		if c.Score > bestScore {
-			bestScore, best = c.Score, b
+	}
+
+	if gfiles := discoverGraphQL(abs); len(gfiles) > 0 {
+		b, cand := buildGraphQLSource(gfiles, root, git)
+		if cand != nil {
+			ir.report.Candidates = append(ir.report.Candidates, *cand)
+		}
+		if b != nil {
+			b.fromInput = input
+			ir.sources = append(ir.sources, b)
 		}
 	}
-	if best != nil {
+
+	if pfiles := discoverProto(abs); len(pfiles) > 0 {
+		b, cand := buildProtoSource(pfiles, root, git)
+		if cand != nil {
+			ir.report.Candidates = append(ir.report.Candidates, *cand)
+		}
+		if b != nil {
+			b.fromInput = input
+			ir.sources = append(ir.sources, b)
+		}
+	}
+
+	if pmSources, pmCands := buildPostmanSources(discoverPostman(abs), root); len(pmSources) > 0 || len(pmCands) > 0 {
+		ir.report.Candidates = append(ir.report.Candidates, pmCands...)
+		for _, b := range pmSources {
+			b.fromInput = input
+			ir.sources = append(ir.sources, b)
+		}
+	}
+
+	// L2 only when L1 produced nothing usable.
+	if !anyUsable(ir.sources) {
+		if b, cand := runL2(abs, input); b != nil {
+			if cand != nil {
+				ir.report.Candidates = append(ir.report.Candidates, *cand)
+			}
+			b.fromInput = input
+			ir.sources = append(ir.sources, b)
+		}
+	}
+
+	if best := recommend(ir.sources); best != nil {
 		best.report.Recommended = true
 	}
 	return ir, nil
 }
 
-// discover walks a tree and returns candidate spec file paths (absolute).
-func discover(rootDir string) []string {
+func anyUsable(sources []*builtSource) bool {
+	for _, b := range sources {
+		if b.report.WouldEmitCommands > 0 && !hasBlocking(b.report.Gaps) {
+			return true
+		}
+	}
+	return false
+}
+
+func readCapped(path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > maxSpecBytes {
+		return nil, fmt.Errorf("file too large: %s", path)
+	}
+	return os.ReadFile(path)
+}
+
+func recommend(sources []*builtSource) *builtSource {
+	prio := map[string]int{"openapi3": 4, "swagger": 3, "graphql": 2, "proto": 1}
+	var best *builtSource
+	for _, b := range sources {
+		switch {
+		case best == nil:
+			best = b
+		case b.report.WouldEmitCommands != best.report.WouldEmitCommands:
+			if b.report.WouldEmitCommands > best.report.WouldEmitCommands {
+				best = b
+			}
+		case prio[b.yc.Backend] != prio[best.yc.Backend]:
+			if prio[b.yc.Backend] > prio[best.yc.Backend] {
+				best = b
+			}
+		case b.baseName < best.baseName:
+			best = b
+		}
+	}
+	return best
+}
+
+func walkFiles(rootDir string, keep func(path string) bool) []string {
 	var out []string
 	_ = filepath.WalkDir(rootDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -116,18 +167,24 @@ func discover(rootDir string) []string {
 		}
 		if d.IsDir() {
 			name := d.Name()
-			if path != rootDir && (ignoreDirs[name] || strings.HasPrefix(name, ".") && name != ".") {
+			if path != rootDir && (ignoreDirs[name] || (strings.HasPrefix(name, ".") && name != ".")) {
 				return fs.SkipDir
 			}
 			return nil
 		}
-		if looksLikeSpecFile(path) {
+		if keep(path) {
 			out = append(out, path)
 		}
 		return nil
 	})
 	sort.Strings(out)
 	return out
+}
+
+func discover(rootDir string) []string      { return walkFiles(rootDir, looksLikeSpecFile) }
+func discoverProto(rootDir string) []string { return walkFiles(rootDir, isProtoFile) }
+func discoverGraphQL(rootDir string) []string {
+	return walkFiles(rootDir, isGraphQLFile)
 }
 
 func looksLikeSpecFile(path string) bool {
@@ -143,8 +200,15 @@ func looksLikeSpecFile(path string) bool {
 	return specDirHints[parent]
 }
 
-// parseCandidates reads and parses each file, producing report Candidates and a
-// path->parsed map for usable ones.
+func isProtoFile(path string) bool {
+	return strings.EqualFold(filepath.Ext(path), ".proto")
+}
+
+func isGraphQLFile(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	return ext == ".graphql" || ext == ".graphqls" || ext == ".gql"
+}
+
 func parseCandidates(files []string, root string) ([]Candidate, map[string]*parsed) {
 	var cands []Candidate
 	parsedByPath := map[string]*parsed{}
@@ -178,9 +242,8 @@ func parseCandidates(files []string, root string) ([]Candidate, map[string]*pars
 	return cands, parsedByPath
 }
 
-// dedupCandidates collapses identical content, keeping the first path (sorted).
 func dedupCandidates(cands []Candidate, parsedByPath map[string]*parsed) {
-	seen := map[string]string{} // hash -> canonical path
+	seen := map[string]string{}
 	for i := range cands {
 		c := &cands[i]
 		if !c.Parsed || c.ContentHash == "" {
@@ -213,7 +276,7 @@ func score(p *parsed) int {
 		s += 5
 	}
 	if p.format == "openapi3" {
-		s++ // tie-break toward OpenAPI 3
+		s++
 	}
 	return s
 }

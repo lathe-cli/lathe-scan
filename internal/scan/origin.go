@@ -7,19 +7,16 @@ import (
 	"time"
 )
 
-// gitOrigin is the resolved git provenance of an input tree.
 type gitOrigin struct {
-	root      string // absolute worktree root
+	root      string
 	repoURL   string
 	pinnedTag string // immutable tag or 40-char SHA
 	refKind   string // tag|sha
 	repoName  string
 }
 
-// detectGitOrigin resolves a reproducible, immutable origin for dir, entirely
-// offline (it only reads local git state). Returns nil when dir is not a git
-// worktree, when it has no usable remote, or when no immutable ref is available;
-// callers fall back to a local_path source.
+// Offline only (local git state). Nil when not a worktree, no remote, or no
+// immutable ref — callers fall back to local_path.
 func detectGitOrigin(dir string) *gitOrigin {
 	root := git(dir, "rev-parse", "--show-toplevel")
 	if root == "" {
@@ -32,8 +29,8 @@ func detectGitOrigin(dir string) *gitOrigin {
 
 	o := &gitOrigin{root: root, repoURL: remote, repoName: repoNameFromURL(remote)}
 
-	// Prefer a tag pointing at HEAD; fall back to the full commit SHA. Both are
-	// immutable and accepted by Lathe's validateRef; floating refs never are.
+	// Tag at HEAD, else full SHA. Both are immutable and accepted by Lathe's
+	// validateRef; floating refs never are.
 	if tag := firstLine(git(dir, "tag", "--points-at", "HEAD")); tag != "" {
 		o.pinnedTag, o.refKind = tag, "tag"
 	} else if sha := git(dir, "rev-parse", "HEAD"); len(sha) == 40 && isHex(sha) {
