@@ -51,6 +51,30 @@ func TestExtractZipRejectsTraversal(t *testing.T) {
 	}
 }
 
+// A zip with no spec falls through to L2; the source name must come from the
+// zip filename, not the random extraction dir (deterministic, --merge-safe).
+func TestExecuteZipL2NameFromArchive(t *testing.T) {
+	run := func() string {
+		zp := makeZip(t, map[string]string{"app/main.py": fastAPISrc})
+		out := t.TempDir()
+		if err := Execute(Options{Inputs: []string{zp}, Out: out}); err != nil {
+			t.Fatal(err)
+		}
+		for k := range readSources(t, filepath.Join(out, sourcesFileName)) {
+			return k
+		}
+		return ""
+	}
+	n1, n2 := run(), run()
+	// makeZip names the archive in.zip -> source name "in", the same every run.
+	if n1 != "in" {
+		t.Errorf("zip L2 source name = %q, want in (from archive filename)", n1)
+	}
+	if n1 != n2 {
+		t.Errorf("zip L2 source name not deterministic: %q vs %q", n1, n2)
+	}
+}
+
 func TestExecuteZipInput(t *testing.T) {
 	zp := makeZip(t, map[string]string{"svc/docs/openapi.yaml": specOpenAPI})
 	out := t.TempDir()

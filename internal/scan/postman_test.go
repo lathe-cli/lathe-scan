@@ -62,6 +62,24 @@ func TestExecutePostman(t *testing.T) {
 	}
 }
 
+// A string-form request must not sink the whole collection: the object-form
+// sibling still converts.
+func TestExecutePostmanStringRequest(t *testing.T) {
+	col := `{"info":{"name":"S","_postman_id":"x"},"item":[
+	  {"name":"a","request":"https://api.acme.com/health"},
+	  {"name":"b","request":{"method":"POST","url":{"path":["users"]}}}
+	]}`
+	in := inputDir(t, "c.postman_collection.json", col)
+	out := t.TempDir()
+	if err := Execute(Options{Inputs: []string{in}, Out: out}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	rep := readReport(t, out).Sources[0]
+	if rep.WouldEmitCommands != 2 { // GET /health (string) + POST /users (object)
+		t.Errorf("wouldEmit = %d, want 2 (string-form request must be honored)", rep.WouldEmitCommands)
+	}
+}
+
 // Postman (L1 artifact) is preferred over guessing routes from source (L2).
 func TestPostmanSuppressesL2(t *testing.T) {
 	in := t.TempDir()

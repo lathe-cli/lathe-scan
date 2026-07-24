@@ -119,7 +119,10 @@ func runL2(inputAbs string, input string) (*builtSource, *Candidate) {
 		return nil, nil
 	}
 
-	name := firstNonEmpty(sanitizeName(filepath.Base(inputAbs)), "api")
+	// Derive the name from the original input, not inputAbs — for a zip, inputAbs
+	// is a random extraction dir, which would make names nondeterministic and
+	// break --merge.
+	name := firstNonEmpty(sanitizeName(strings.TrimSuffix(filepath.Base(input), filepath.Ext(input))), "api")
 	draft := synthesizeOpenAPI(name, best.name, bestRoutes)
 
 	b := &builtSource{

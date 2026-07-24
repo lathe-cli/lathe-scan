@@ -99,6 +99,13 @@ func (b *bundler) resolveExternal(ref, baseDir string) (string, bool) {
 		// In-document ref with a nonstandard prefix; leave as missing.
 		return "", false
 	}
+	// Only schema-section refs can be hoisted into components/schemas
+	// (definitions). External refs to path items, parameters, responses, or
+	// whole files are not schemas — bundling them there would silently produce an
+	// invalid spec, so leave them unresolved and let the caller flag a gap.
+	if !b.isSchemaFragment(frag) {
+		return "", false
+	}
 	absFile := filepath.Clean(filepath.Join(baseDir, filepath.FromSlash(filePart)))
 	if !pathUnderRoot(b.root, absFile) {
 		return "", false
@@ -225,6 +232,14 @@ func sortedKeysBool(m map[string]bool) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// isSchemaFragment reports whether a ref fragment points into the schema section
+// (/components/schemas/... or /definitions/...). Whole-file refs (empty
+// fragment) are treated as non-schema, since their kind is unknown.
+func (b *bundler) isSchemaFragment(frag string) bool {
+	prefix := "/" + strings.Join(b.section, "/") + "/"
+	return strings.HasPrefix(frag, prefix) && len(frag) > len(prefix)
 }
 
 // pathUnderRoot rejects $ref targets that escape the scanned tree.

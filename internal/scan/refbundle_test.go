@@ -61,6 +61,30 @@ func TestBundleSpecInlinesAndRewrites(t *testing.T) {
 	}
 }
 
+// A path-item (non-schema) external ref must NOT be hoisted into schemas; it is
+// reported missing so the source falls back to a blocking gap.
+func TestBundleSkipsNonSchemaRef(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "openapi.yaml", `openapi: 3.0.3
+info: { title: T }
+paths:
+  /users:
+    $ref: "./paths/users.yaml"
+`)
+	writeFile(t, dir, "paths/users.yaml", "get:\n  responses:\n    \"200\": { description: ok }\n")
+
+	out, _, missing, err := bundleSpec(filepath.Join(dir, "openapi.yaml"), "openapi3", dir)
+	if err != nil {
+		t.Fatalf("bundleSpec: %v", err)
+	}
+	if len(missing) == 0 {
+		t.Errorf("non-schema external ref should be reported missing, not hoisted; bundle:\n%s", out)
+	}
+	if strings.Contains(string(out), "#/components/schemas/users") {
+		t.Errorf("path-item ref was wrongly rewritten into schemas:\n%s", out)
+	}
+}
+
 func TestExtractFragment(t *testing.T) {
 	doc := map[string]any{
 		"components": map[string]any{

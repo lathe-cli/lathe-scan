@@ -41,9 +41,11 @@ type pmCollection struct {
 }
 
 type pmItem struct {
-	Name    string     `json:"name"`
-	Item    []pmItem   `json:"item"`
-	Request *pmRequest `json:"request"`
+	Name string   `json:"name"`
+	Item []pmItem `json:"item"`
+	// Request is a string (URL shorthand) or an object; kept raw so a string-form
+	// item does not fail the whole collection's unmarshal.
+	Request json.RawMessage `json:"request"`
 }
 
 type pmRequest struct {
@@ -105,16 +107,34 @@ func collectPostmanRoutes(items []pmItem) []route {
 		if len(it.Item) > 0 {
 			out = append(out, collectPostmanRoutes(it.Item)...)
 		}
-		if it.Request == nil || it.Request.Method == "" {
+		method, url := parsePostmanRequest(it.Request)
+		if method == "" {
 			continue
 		}
-		path := postmanURLPath(it.Request.URL)
+		path := postmanURLPath(url)
 		if path == "" {
 			continue
 		}
-		out = append(out, route{method: strings.ToUpper(it.Request.Method), path: path})
+		out = append(out, route{method: method, path: path})
 	}
 	return out
+}
+
+// parsePostmanRequest handles a request that is either an object ({method, url})
+// or a bare URL string (method defaults to GET). Returns "" method to skip.
+func parsePostmanRequest(raw json.RawMessage) (method string, url json.RawMessage) {
+	if len(raw) == 0 {
+		return "", nil
+	}
+	var obj pmRequest
+	if err := json.Unmarshal(raw, &obj); err == nil && obj.Method != "" {
+		return strings.ToUpper(obj.Method), obj.URL
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil && s != "" {
+		return "GET", raw // string-form request: the whole value is the URL
+	}
+	return "", nil
 }
 
 // ":id"/"{{var}}" → "{id}"/"{var}".

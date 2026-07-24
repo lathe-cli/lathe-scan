@@ -26,3 +26,7 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           version: latest
+          # Build golangci-lint from source with the runner's Go 1.25 toolchain;
+          # the prebuilt "latest" binary is built with an older Go and refuses a
+          # go.mod that targets 1.25.
+          install-mode: goinstall
