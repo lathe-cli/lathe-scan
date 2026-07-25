@@ -126,10 +126,14 @@ func TestDedupByContentHash(t *testing.T) {
 
 func TestNameSanitize(t *testing.T) {
 	cases := map[string]string{
-		"Billing API":    "billing-api",
-		"  Acme/v2  ":    "acme-v2",
+		"Billing API":    "billing_api",
+		"  Acme/v2  ":    "acme_v2",
 		"___":            "",
-		"petStore-2000!": "petstore-2000",
+		"petStore-2000!": "petstore_2000",
+		"2000 Sensors":   "s_2000_sensors",
+		"Type":           "s_type",
+		"map":            "s_map",
+		"Go API":         "go_api",
 	}
 	for in, want := range cases {
 		if got := sanitizeName(in); got != want {

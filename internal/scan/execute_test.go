@@ -43,14 +43,14 @@ func TestExecuteLocalSource(t *testing.T) {
 	if len(srcs) != 1 {
 		t.Fatalf("want 1 source, got %d: %v", len(srcs), srcs)
 	}
-	s := srcs["billing-api"]
+	s := srcs["billing_api"]
 	if s == nil {
 		t.Fatalf("source billing-api missing, got %v", srcs)
 	}
 	if s["backend"] != "openapi3" {
 		t.Errorf("backend = %v", s["backend"])
 	}
-	if s["local_path"] != "billing-api" {
+	if s["local_path"] != "billing_api" {
 		t.Errorf("local_path = %v, want billing-api", s["local_path"])
 	}
 	if s["repo_url"] != nil {
@@ -59,7 +59,7 @@ func TestExecuteLocalSource(t *testing.T) {
 	if s["default_hostname"] != "api.acme.com" {
 		t.Errorf("default_hostname = %v", s["default_hostname"])
 	}
-	if _, err := os.Stat(filepath.Join(out, "billing-api", "openapi.yaml")); err != nil {
+	if _, err := os.Stat(filepath.Join(out, "billing_api", "openapi.yaml")); err != nil {
 		t.Errorf("copied spec missing: %v", err)
 	}
 	for _, f := range []string{reportFileName, gapsFileName} {
@@ -210,7 +210,7 @@ func TestExecuteMergePreservesForeign(t *testing.T) {
 	if _, ok := srcs["legacy-graph"]; !ok {
 		t.Error("--merge dropped the foreign graphql source")
 	}
-	if _, ok := srcs["billing-api"]; !ok {
+	if _, ok := srcs["billing_api"]; !ok {
 		t.Error("--merge did not add the new source")
 	}
 	g, _ := srcs["legacy-graph"]["graphql"].(map[string]any)

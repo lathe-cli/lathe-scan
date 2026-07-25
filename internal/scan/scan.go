@@ -114,28 +114,48 @@ func uniqueName(base string, used map[string]bool) string {
 		return base
 	}
 	for i := 2; ; i++ {
-		cand := fmt.Sprintf("%s-%d", base, i)
+		cand := fmt.Sprintf("%s_%d", base, i)
 		if !used[cand] {
 			return cand
 		}
 	}
 }
 
+// Source names become Go package names in the CLI Lathe generates, so they must
+// be valid identifiers: underscores rather than hyphens, and never a leading
+// digit. A kebab name here fails downstream as `package billing-api`.
 func sanitizeName(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
 	var b strings.Builder
-	prevDash := false
+	prevSep := false
 	for _, r := range s {
 		switch {
 		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
 			b.WriteRune(r)
-			prevDash = false
+			prevSep = false
 		default:
-			if !prevDash && b.Len() > 0 {
-				b.WriteByte('-')
-				prevDash = true
+			if !prevSep && b.Len() > 0 {
+				b.WriteByte('_')
+				prevSep = true
 			}
 		}
 	}
-	return strings.Trim(b.String(), "-")
+	name := strings.Trim(b.String(), "_")
+	if name == "" {
+		return ""
+	}
+	if name[0] >= '0' && name[0] <= '9' || goKeywords[name] {
+		return "s_" + name
+	}
+	return name
+}
+
+// A source named after a Go keyword compiles no better than a hyphenated one:
+// Lathe would emit `package type`.
+var goKeywords = map[string]bool{
+	"break": true, "case": true, "chan": true, "const": true, "continue": true,
+	"default": true, "defer": true, "else": true, "fallthrough": true, "for": true,
+	"func": true, "go": true, "goto": true, "if": true, "import": true,
+	"interface": true, "map": true, "package": true, "range": true, "return": true,
+	"select": true, "struct": true, "switch": true, "type": true, "var": true,
 }
