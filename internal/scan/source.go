@@ -9,7 +9,15 @@ import (
 type builtSource struct {
 	Name      string
 	baseName  string
-	fromInput string
+	fromInput string // input as the user spelled it, for the report
+	inputKey  string // absolute input path; identity across runs, see provenance
+	// identity locates this source inside its input (spec path, collection file).
+	// It must not depend on what else the scan found: a key that shifts as the
+	// corpus grows re-points a name at a different API and --merge drops the policy
+	// hanging off the old entry. Backends yielding at most one source per input
+	// (proto, graphql, L2) use a constant — anything derived from the files found
+	// moves the moment a file is added, and provKey already includes the backend.
+	identity string
 
 	origin *Origin
 	yc     *ycSource
@@ -17,6 +25,17 @@ type builtSource struct {
 	synth  []synthFile
 
 	report *SourceReport
+}
+
+// provenance lets --merge recognize an entry this tool wrote earlier, so a
+// rescan updates it instead of appending a copy. Deliberately independent of the
+// assigned name, which --name and collision suffixes can change.
+func (b *builtSource) provenance() *Provenance {
+	return &Provenance{
+		Input:   b.inputKey,
+		Backend: b.yc.Backend,
+		Key:     b.identity,
+	}
 }
 
 type copyItem struct {
@@ -53,6 +72,7 @@ func buildSource(c *Candidate, p *parsed, root string, git *gitOrigin) *builtSou
 	}
 	b := &builtSource{
 		baseName: firstNonEmpty(sanitizeName(p.title), sanitizeName(repoName), sanitizeName(parentDirName(c.Path)), "source"),
+		identity: c.Path,
 		yc:       &ycSource{DefaultHostname: p.hostname, Backend: p.format},
 	}
 
@@ -117,6 +137,7 @@ func bundleSource(c *Candidate, p *parsed, root string) *builtSource {
 	block := &filesBlock{Files: []string{draftName}}
 	b := &builtSource{
 		baseName: firstNonEmpty(sanitizeName(p.title), sanitizeName(parentDirName(c.Path)), "api"),
+		identity: c.Path,
 		origin:   &Origin{Type: "local_path"},
 		yc:       &ycSource{DefaultHostname: p.hostname, Backend: p.format},
 		synth:    []synthFile{{relTo: draftName, content: bundled}},

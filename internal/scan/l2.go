@@ -21,6 +21,7 @@ const (
 type route struct {
 	method string
 	path   string
+	file   string // repo-relative file the route was recovered from
 }
 
 // detect gates finders so frameworks that share a call shape (Gin vs Echo)
@@ -82,35 +83,48 @@ var (
 	reAxum  = regexp.MustCompile(`\.route\(\s*"([^"]+)"\s*,\s*(get|post|put|delete|patch)\b`)
 )
 
-func runL2(inputAbs string, input string) (*builtSource, *Candidate) {
-	srcFiles := walkFiles(inputAbs, isSourceFile)
-	if len(srcFiles) > l2MaxFiles {
-		srcFiles = srcFiles[:l2MaxFiles]
-	}
-	byExt := map[string]string{}
-	for _, f := range srcFiles {
+type sourceFile struct {
+	rel  string
+	ext  string
+	body string
+}
+
+// scanRoot is the input tree, so x-lathe-source-file is repo-relative and means
+// the same thing to a reviewer as a path in report.json does.
+func runL2(idx *fileIndex, input, scanRoot string) (*builtSource, *Candidate) {
+	files := make([]sourceFile, 0, len(idx.sources))
+	for _, f := range idx.sources {
 		data, err := readCapped(f)
 		if err != nil {
 			continue
 		}
-		ext := strings.ToLower(filepath.Ext(f))
-		byExt[ext] += "\n" + string(data)
+		files = append(files, sourceFile{
+			rel:  relOrBase(scanRoot, f),
+			ext:  strings.ToLower(filepath.Ext(f)),
+			body: string(data),
+		})
 	}
 
+	// Detection is whole-corpus (an import marker can sit in any file), but
+	// extraction is per file: it keeps each route's origin and stops a regexp
+	// from matching across a file boundary into a route that exists nowhere.
 	best := extractor{}
 	var bestRoutes []route
 	for _, ex := range extractors {
-		var content string
-		for e := range ex.exts {
-			content += byExt[e]
-		}
-		if content == "" {
+		if !detects(ex, files) {
 			continue
 		}
-		if ex.detect != nil && !ex.detect(content) {
-			continue
+		var routes []route
+		for _, f := range files {
+			if !ex.exts[f.ext] {
+				continue
+			}
+			for _, r := range ex.find(f.body) {
+				r.file = f.rel
+				routes = append(routes, r)
+			}
 		}
-		routes := dedupeRoutes(ex.find(content))
+		routes = dedupeRoutes(routes)
 		if len(routes) > len(bestRoutes) {
 			best, bestRoutes = ex, routes
 		}
@@ -127,6 +141,7 @@ func runL2(inputAbs string, input string) (*builtSource, *Candidate) {
 
 	b := &builtSource{
 		baseName: name,
+		identity: "l2",
 		origin:   &Origin{Type: "local_path"},
 		yc:       &ycSource{Backend: "openapi3", OpenAPI3: &filesBlock{Files: []string{l2DraftName}}},
 		synth:    []synthFile{{relTo: l2DraftName, content: draft}},
@@ -150,12 +165,34 @@ func runL2(inputAbs string, input string) (*builtSource, *Candidate) {
 			Message: "Django urlconf does not declare HTTP methods; every route was assumed GET — verify each view", Blocking: false,
 		})
 	}
+	// A silent cap reads as "we looked at everything"; say what was left out.
+	if idx.truncated {
+		b.report.Gaps = append(b.report.Gaps, Gap{
+			Kind: gapScanTruncated, Scope: "source",
+			Message:  fmt.Sprintf("only the first %d source files were analyzed; routes defined beyond them are missing", l2MaxFiles),
+			Blocking: false,
+		})
+	}
 	cand := &Candidate{
 		Path: input, Format: "openapi3", Parsed: true,
 		Metrics: b.report.Metrics,
 		Reason:  fmt.Sprintf("L2 %s extractor, %d routes", best.name, len(bestRoutes)),
 	}
 	return b, cand
+}
+
+// A marker in any claimed file gates the whole extractor: Gin vs Echo share a
+// call shape and are told apart only by their import.
+func detects(ex extractor, files []sourceFile) bool {
+	if ex.detect == nil {
+		return true
+	}
+	for _, f := range files {
+		if ex.exts[f.ext] && ex.detect(f.body) {
+			return true
+		}
+	}
+	return false
 }
 
 func detectFastAPI(src string) bool {
@@ -382,7 +419,7 @@ func dedupeRoutes(routes []route) []route {
 		seen[key] = true
 		out = append(out, r)
 	}
-	sort.Slice(out, func(i, j int) bool {
+	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].path != out[j].path {
 			return out[i].path < out[j].path
 		}
@@ -420,6 +457,10 @@ func synthesizeOpenAPI(title, extractor string, routes []route) []byte {
 			"responses": map[string]any{
 				"200": map[string]any{"description": "extracted by lathe-scan; response shape unknown"},
 			},
+		}
+		// The draft exists to be reviewed; a route with no origin cannot be checked.
+		if r.file != "" {
+			op["x-lathe-source-file"] = r.file
 		}
 		if params := pathParams(r.path); len(params) > 0 {
 			op["parameters"] = params

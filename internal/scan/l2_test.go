@@ -1,6 +1,7 @@
 package scan
 
 import (
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -32,9 +33,9 @@ func setup(r *gin.Engine) {
 func TestFindFastAPI(t *testing.T) {
 	routes := dedupeRoutes(findFastAPI(fastAPISrc))
 	want := []route{
-		{"POST", "/users"},
-		{"GET", "/health"},
-		{"GET", "/users/{user_id}"},
+		{method: "POST", path: "/users"},
+		{method: "GET", path: "/health"},
+		{method: "GET", path: "/users/{user_id}"},
 	}
 	if len(routes) != len(want) {
 		t.Fatalf("got %d routes, want %d: %+v", len(routes), len(want), routes)
@@ -318,9 +319,9 @@ func asNoSources(err error, target *ErrNoSources) bool {
 // Draft must re-parse as openapi3 with one operation per recovered route.
 func TestSynthesizeRoundTrip(t *testing.T) {
 	routes := []route{
-		{"GET", "/health"},
-		{"GET", "/users/{id}"},
-		{"POST", "/users"},
+		{method: "GET", path: "/health"},
+		{method: "GET", path: "/users/{id}"},
+		{method: "POST", path: "/users"},
 	}
 	draft := synthesizeOpenAPI("demo", "fastapi", routes)
 	p, err := parseSpec(draft)
@@ -364,7 +365,7 @@ func TestUniqueOperationIds(t *testing.T) {
 // Lathe drops operations without an operationId, so every synthesized op must
 // carry one or the generated CLI has zero commands.
 func TestSynthesizeEmitsOperationId(t *testing.T) {
-	draft := string(synthesizeOpenAPI("demo", "chi", []route{{"GET", "/users/{id}"}, {"POST", "/users"}}))
+	draft := string(synthesizeOpenAPI("demo", "chi", []route{{method: "GET", path: "/users/{id}"}, {method: "POST", path: "/users"}}))
 	for _, want := range []string{"operationId: getUsersId", "operationId: postUsers"} {
 		if !strings.Contains(draft, want) {
 			t.Errorf("synth draft missing %q:\n%s", want, draft)
@@ -394,6 +395,44 @@ func TestExecuteL2FastAPI(t *testing.T) {
 	}
 	if _, err := readSourcesFileExists(filepath.Join(out, s["local_path"].(string), l2DraftName)); err != nil {
 		t.Errorf("synthesized draft missing: %v", err)
+	}
+}
+
+// The L2 draft is meant to be reviewed, so every operation must name its file.
+func TestExecuteL2RecordsSourceFile(t *testing.T) {
+	in := t.TempDir()
+	writeFile(t, in, "svc/users.py", fastAPISrc)
+	writeFile(t, in, "svc/orders.py", "from fastapi import APIRouter\nrouter = APIRouter()\n\n@router.get(\"/orders\")\ndef list_orders(): ...\n")
+
+	out := t.TempDir()
+	if err := Execute(Options{Inputs: []string{in}, Out: out}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	s := firstSource(t, filepath.Join(out, sourcesFileName))
+	draft, err := readCapped(filepath.Join(out, s["local_path"].(string), l2DraftName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Repo-relative, so the path means the same thing as one in report.json.
+	for _, want := range []string{"x-lathe-source-file: svc/users.py", "x-lathe-source-file: svc/orders.py"} {
+		if !strings.Contains(string(draft), want) {
+			t.Errorf("draft missing %q:\n%s", want, draft)
+		}
+	}
+}
+
+// Routes from different files must not be merged into one blob before matching:
+// a regexp that spans a file boundary invents a route that exists nowhere.
+func TestL2DoesNotMatchAcrossFiles(t *testing.T) {
+	in := t.TempDir()
+	writeFile(t, in, "a.py", "from fastapi import FastAPI\napp = FastAPI()\n\n@app.get(")
+	writeFile(t, in, "b.py", "\"/phantom\")\ndef phantom(): ...\n")
+
+	out := t.TempDir()
+	err := Execute(Options{Inputs: []string{in}, Out: out})
+	var noSrc ErrNoSources
+	if !errors.As(err, &noSrc) {
+		t.Fatalf("a route split across two files is not a route; got %v", err)
 	}
 }
 

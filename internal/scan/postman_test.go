@@ -81,6 +81,19 @@ func TestExecutePostmanStringRequest(t *testing.T) {
 }
 
 // Postman (L1 artifact) is preferred over guessing routes from source (L2).
+// summary.postman_candidates is part of the report contract; a collection that
+// produced a source still has to be counted.
+func TestExecuteCountsPostmanCandidates(t *testing.T) {
+	in := inputDir(t, "collection.json", postmanCollection)
+	out := t.TempDir()
+	if err := Execute(Options{Inputs: []string{in}, Out: out}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got := readReport(t, out).Summary.PostmanCandidates; got != 1 {
+		t.Errorf("summary.postman_candidates = %d, want 1", got)
+	}
+}
+
 func TestPostmanSuppressesL2(t *testing.T) {
 	in := t.TempDir()
 	writeFile(t, in, "api.postman_collection.json", postmanCollection)

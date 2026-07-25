@@ -32,6 +32,10 @@ type ErrWrite struct{ err error }
 func (e ErrWrite) Error() string { return "write output: " + e.err.Error() }
 func (e ErrWrite) Unwrap() error { return e.err }
 
+var preferBackends = map[string]bool{
+	"openapi3": true, "swagger": true, "proto": true, "graphql": true,
+}
+
 func Execute(opts Options) error {
 	if strings.TrimSpace(opts.Out) == "" {
 		return fmt.Errorf("--out is required")
@@ -39,44 +43,38 @@ func Execute(opts Options) error {
 	if opts.Name != "" && len(opts.Inputs) != 1 {
 		return fmt.Errorf("--name is only valid with a single input")
 	}
-
-	report := &Report{SchemaVersion: 1, ToolVersion: version}
-	usedNames := map[string]bool{}
-
-	// --merge keeps foreign sources already present in the output.
-	var existing *sourcesFile
-	if opts.Merge {
-		var err error
-		existing, err = loadExistingSources(filepath.Join(opts.Out, sourcesFileName))
-		if err != nil {
-			return err
-		}
-		for name := range existing.Sources {
-			usedNames[name] = true
-		}
+	if opts.Prefer != "" && !preferBackends[opts.Prefer] {
+		return fmt.Errorf("--prefer %q: want one of openapi3, swagger, proto, graphql", opts.Prefer)
 	}
 
-	inputs := append([]string(nil), opts.Inputs...)
-	sort.Strings(inputs)
+	// Non-nil so report.json carries [] rather than null: an empty list is a
+	// cleaner contract for anything consuming this file.
+	report := &Report{SchemaVersion: 1, ToolVersion: version, Gaps: []Gap{}}
+	inputs, inputKeys := normalizeInputs(opts.Inputs)
 
 	var built []*builtSource
+	postmanCandidates := 0
 	for _, in := range inputs {
-		scanPath, kindHint := in, ""
-		if isZipInput(in) {
-			dir, cleanup, err := extractZip(in)
+		scanPath, kindHint := in.path, ""
+		if isZipInput(in.path) {
+			dir, cleanup, err := extractZip(in.path)
 			if err != nil {
-				report.Inputs = append(report.Inputs, InputReport{Input: in, Kind: "zip", Error: err.Error()})
+				report.Inputs = append(report.Inputs, InputReport{Input: in.path, Kind: "zip", Error: err.Error()})
+				report.Gaps = append(report.Gaps, inputErrorGap(in.path, err))
 				continue
 			}
-			defer cleanup()
+			defer cleanup() // the extracted tree must outlive the loop: copies read from it
 			scanPath, kindHint = dir, "zip"
 		}
-		ir, err := scanInput(in, scanPath, kindHint, opts)
+		ir, err := scanInput(in.path, in.key, scanPath, kindHint, opts)
 		if err != nil {
-			report.Inputs = append(report.Inputs, InputReport{Input: in, Error: err.Error()})
+			report.Inputs = append(report.Inputs, InputReport{Input: in.path, Error: err.Error()})
+			report.Gaps = append(report.Gaps, inputErrorGap(in.path, err))
 			continue
 		}
 		report.Inputs = append(report.Inputs, ir.report)
+		report.Gaps = append(report.Gaps, ir.gaps...)
+		postmanCandidates += ir.postmanCandidates
 		built = append(built, ir.sources...)
 	}
 
@@ -90,19 +88,54 @@ func Execute(opts Options) error {
 	sort.Slice(built, func(i, j int) bool {
 		return built[i].sortKey() < built[j].sortKey()
 	})
-	for _, b := range built {
-		b.Name = uniqueName(b.baseName, usedNames)
-		usedNames[b.Name] = true
+	prior, err := loadPriorRun(opts, inputKeys, built)
+	if err != nil {
+		return err
 	}
+	final := assignNames(built, prior)
 
-	if len(built) == 0 && (existing == nil || len(existing.Sources) == 0) {
-		return ErrNoSources{msg: "no usable API sources found across all inputs"}
-	}
-
-	if err := writeOutputs(opts, existing, built, report); err != nil {
+	written, err := writeOutputs(opts, final, built, prior, report, postmanCandidates)
+	if err != nil {
 		return ErrWrite{err: err}
 	}
+	// The audit artifacts are written either way: "nothing usable" is a result
+	// the user needs explained, not just an exit code.
+	if written == 0 {
+		return ErrNoSources{msg: "no usable API sources written; see GAPS.md"}
+	}
 	return nil
+}
+
+type inputSpec struct {
+	path string // as the user spelled it
+	key  string // absolute, for identity across runs
+}
+
+// normalizeInputs sorts for determinism and collapses inputs that resolve to the
+// same path, which would otherwise be scanned twice into duplicate sources.
+func normalizeInputs(raw []string) ([]inputSpec, map[string]bool) {
+	sorted := append([]string(nil), raw...)
+	sort.Strings(sorted)
+
+	keys := map[string]bool{}
+	out := make([]inputSpec, 0, len(sorted))
+	for _, in := range sorted {
+		key, err := filepath.Abs(in)
+		if err != nil {
+			key = in
+		}
+		if keys[key] {
+			continue
+		}
+		keys[key] = true
+		out = append(out, inputSpec{path: in, key: key})
+	}
+	return out, keys
+}
+
+func inputErrorGap(input string, err error) Gap {
+	return Gap{Kind: gapInputError, Scope: "input", Ref: input,
+		Message: err.Error(), Blocking: true}
 }
 
 func uniqueName(base string, used map[string]bool) string {

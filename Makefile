@@ -2,6 +2,10 @@ GO          ?= go
 OUT_DIR     := ./bin
 BINDIR      ?= $(if $(GOBIN),$(GOBIN),$(or $(GOPATH),$(HOME)/go)/bin)
 BIN         := lathe-scan
+PKG         := github.com/lathe-cli/lathe-scan
+# report.json records tool_version; a build must be able to say which one it is.
+VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS     := -X $(PKG)/internal/scan.version=$(VERSION)
 
 BOLD  := \033[1m
 CYAN  := \033[36m
@@ -16,8 +20,8 @@ RESET := \033[0m
 
 build: ## Build local lathe-scan binary into ./bin/lathe-scan
 	@mkdir -p $(OUT_DIR)
-	$(GO) build -trimpath -o $(OUT_DIR)/$(BIN) .
-	@printf '\n$(GREEN)  ✓ built $(CYAN)$(OUT_DIR)/$(BIN)$(RESET)\n\n'
+	$(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $(OUT_DIR)/$(BIN) .
+	@printf '\n$(GREEN)  ✓ built $(CYAN)$(OUT_DIR)/$(BIN)$(RESET) $(VERSION)\n\n'
 
 install: build ## Install local lathe-scan binary into BINDIR
 	@mkdir -p $(BINDIR)

@@ -142,15 +142,18 @@ paths:
 	in := t.TempDir()
 	writeFile(t, in, "openapi.yaml", spec)
 	out := t.TempDir()
-	if err := Execute(Options{Inputs: []string{in}, Out: out}); err != nil {
-		t.Fatalf("Execute: %v", err)
+
+	// Unbundleable → blocking ref gap, so no source is emitted; the gap is the
+	// whole result and has to survive at the report's top level.
+	err := Execute(Options{Inputs: []string{in}, Out: out})
+	if err == nil {
+		t.Fatal("expected ErrNoSources: a spec with an unresolvable $ref is not usable")
 	}
-	rep := readReport(t, out).Sources[0]
-	// Unbundleable → blocking ref gap, low confidence, no bundled gap.
+	rep := readReport(t, out)
+	if len(rep.Sources) != 0 {
+		t.Errorf("unbundleable spec must not be emitted: %+v", rep.Sources)
+	}
 	if !hasGap(rep.Gaps, gapRefUnresolved, true) {
 		t.Errorf("expected blocking ref-unresolved gap, got %+v", rep.Gaps)
-	}
-	if rep.Confidence != confLow {
-		t.Errorf("confidence = %q, want low", rep.Confidence)
 	}
 }

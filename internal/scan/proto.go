@@ -27,7 +27,7 @@ type protoFileInfo struct {
 
 // No protoc. Lathe only generates for RPCs with google.api.http, so would_emit
 // counts those. Compilation is unverified offline → usable sources cap at medium.
-func buildProtoSource(files []string, root string, git *gitOrigin) (*builtSource, *Candidate) {
+func buildProtoSource(files []string, root string, git *gitOrigin) (*builtSource, *Candidate, []Gap) {
 	infos := make([]protoFileInfo, 0, len(files))
 	dirs := make([]string, 0, len(files))
 	var methods, httpMethods, services int
@@ -46,7 +46,7 @@ func buildProtoSource(files []string, root string, git *gitOrigin) (*builtSource
 		imports = append(imports, info.imports...)
 	}
 	if len(infos) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	// Prefer a root under which local imports resolve; else common ancestor.
@@ -63,14 +63,17 @@ func buildProtoSource(files []string, root string, git *gitOrigin) (*builtSource
 	// report it as a candidate but do not emit it as a source.
 	if httpMethods == 0 {
 		cand.Reason += "; not emitted (no google.api.http)"
-		return nil, cand
+		// Blocking: this is what kept the source out of sources.yaml; calling it
+		// advisory would contradict the gap vocabulary.
+		return nil, cand, []Gap{{Kind: gapProtoNoHTTP, Scope: "input", Ref: cand.Path,
+			Message:  fmt.Sprintf("%d rpc across %d service(s) but no google.api.http annotation; Lathe would emit no commands, so no proto source was written", methods, services),
+			Blocking: true}}
 	}
 
 	var entries []string
-	for i, info := range infos {
+	for _, info := range infos {
 		if info.services > 0 {
 			if rel, err := filepath.Rel(protoDir, filepath.Join(root, filepath.FromSlash(info.rel))); err == nil {
-				_ = i
 				entries = append(entries, filepath.ToSlash(rel))
 			}
 		}
@@ -90,6 +93,7 @@ func buildProtoSource(files []string, root string, git *gitOrigin) (*builtSource
 	}
 	b := &builtSource{
 		baseName: firstNonEmpty(sanitizeName(repoName), sanitizeName(filepath.Base(protoDir)), "proto"),
+		identity: "proto",
 		yc:       &ycSource{Backend: "proto"},
 	}
 	block := &protoBlock{Entries: entries}
@@ -113,20 +117,16 @@ func buildProtoSource(files []string, root string, git *gitOrigin) (*builtSource
 	}
 	b.yc.Proto = block
 
-	var gaps []Gap
-	gaps = append(gaps, Gap{Kind: gapProtoImports, Scope: "source",
-		Message: "staging and import roots were inferred statically; run `lathe sync-specs` (needs protoc) to verify the tree compiles", Blocking: false})
-
-	conf := confMedium
 	b.report = &SourceReport{
 		Level: "L1", Backend: "proto",
 		WouldEmitCommands: httpMethods,
 		Files:             entries,
 		Metrics:           &Metrics{Operations: methods},
-		Gaps:              gaps,
-		Confidence:        conf,
+		Gaps: []Gap{{Kind: gapProtoImports, Scope: "source",
+			Message: "staging and import roots were inferred statically; run `lathe sync-specs` (needs protoc) to verify the tree compiles", Blocking: false}},
+		Confidence: confMedium,
 	}
-	return b, cand
+	return b, cand, nil
 }
 
 func analyzeProto(rel string, data []byte) protoFileInfo {

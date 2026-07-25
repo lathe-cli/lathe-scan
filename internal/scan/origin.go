@@ -41,6 +41,12 @@ func detectGitOrigin(dir string) *gitOrigin {
 	return o
 }
 
+// isGitWorktree distinguishes "not a repo" (local_path is the only honest
+// origin) from "a repo we could not pin" (worth reporting as a gap).
+func isGitWorktree(dir string) bool {
+	return git(dir, "rev-parse", "--show-toplevel") != ""
+}
+
 func git(dir string, args ...string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
