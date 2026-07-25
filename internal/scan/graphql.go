@@ -46,6 +46,7 @@ func buildGraphQLSource(files []string, root string, git *gitOrigin) (*builtSour
 	}
 	b := &builtSource{
 		baseName: firstNonEmpty(sanitizeName(repoName), sanitizeName(parentDirName(primary)), "graphql"),
+		identity: "graphql",
 		yc:       &ycSource{Backend: "graphql"},
 	}
 	block := &graphqlBlock{

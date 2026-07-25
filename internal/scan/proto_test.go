@@ -147,9 +147,13 @@ func TestExecuteProtoWithHTTP(t *testing.T) {
 // bootstrap, so it is not emitted as a source (report-only candidate).
 func TestExecuteProtoNoHTTPNotEmitted(t *testing.T) {
 	in := inputDir(t, "api.proto", protoNoHTTP)
-	err := Execute(Options{Inputs: []string{in}, Out: t.TempDir()})
+	out := t.TempDir()
+	err := Execute(Options{Inputs: []string{in}, Out: out})
 	var noSrc ErrNoSources
 	if err == nil || !asNoSources(err, &noSrc) {
 		t.Fatalf("want ErrNoSources (proto without http not emitted), got %v", err)
+	}
+	if !hasGap(readReport(t, out).Gaps, gapProtoNoHTTP, true) {
+		t.Errorf("expected blocking %s gap, got %+v", gapProtoNoHTTP, readReport(t, out).Gaps)
 	}
 }

@@ -41,7 +41,7 @@ func TestDiscoverSkipsIgnoredDirs(t *testing.T) {
 	writeFile(t, root, "vendor/x/swagger.json", specSwagger)         // must be skipped
 	writeFile(t, root, ".git/openapi.yaml", specOpenAPI)             // must be skipped
 
-	got := discover(root)
+	got := indexFiles(root).specs
 	if len(got) != 1 {
 		t.Fatalf("discover found %d files, want 1: %v", len(got), got)
 	}
@@ -56,7 +56,7 @@ func TestDiscoverSkipsTestAndSampleDirs(t *testing.T) {
 	for _, d := range []string{"samples", "sample", "test", "tests", "__tests__", "fixtures", "fixture", "e2e", "third_party", "generated"} {
 		writeFile(t, root, d+"/openapi.yaml", specOpenAPI) // scaffolding — must be skipped
 	}
-	got := discover(root)
+	got := indexFiles(root).specs
 	if len(got) != 1 || filepath.Dir(got[0]) != root {
 		t.Fatalf("want only the root spec, got %d: %v", len(got), got)
 	}
@@ -71,7 +71,7 @@ func TestDedupBySignature(t *testing.T) {
 	variant := strings.NewReplacer("Billing API", "Billing API v2", "api.acme.com", "api2.acme.com").Replace(specOpenAPI)
 	writeFile(t, root, "docs/openapi.yaml", variant)
 
-	cands, parsed := parseCandidates(discover(root), root)
+	cands, parsed := parseCandidates(indexFiles(root).specs, root)
 	dedupCandidates(cands, parsed)
 	nonDup := 0
 	for _, c := range cands {
@@ -88,7 +88,7 @@ func TestDedupSignatureKeepsDistinctAPIs(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "a/openapi.yaml", specOpenAPI)
 	writeFile(t, root, "b/openapi.yaml", strings.ReplaceAll(specOpenAPI, "invoices", "orders")) // different paths
-	cands, parsed := parseCandidates(discover(root), root)
+	cands, parsed := parseCandidates(indexFiles(root).specs, root)
 	dedupCandidates(cands, parsed)
 	nonDup := 0
 	for _, c := range cands {
@@ -106,7 +106,7 @@ func TestDedupByContentHash(t *testing.T) {
 	writeFile(t, root, "openapi.yaml", specOpenAPI)
 	writeFile(t, root, "docs/openapi.json", specOpenAPI) // identical content, different path
 
-	files := discover(root)
+	files := indexFiles(root).specs
 	cands, parsed := parseCandidates(files, root)
 	dedupCandidates(cands, parsed)
 

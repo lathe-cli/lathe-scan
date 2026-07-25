@@ -20,8 +20,8 @@ var ignoreDirs = map[string]bool{
 	// precision win on real repos (e.g. openapi-generator ships 120+ sample specs).
 	"testdata": true, "test": true, "tests": true, "__tests__": true,
 	"e2e": true, "fixture": true, "fixtures": true,
-	"sample": true, "samples": true, "third_party": true, "third-party": true,
-	"generated": true,
+	"sample": true, "samples": true, "example": true, "examples": true,
+	"third_party": true, "third-party": true, "generated": true,
 }
 
 var specDirHints = map[string]bool{
@@ -31,11 +31,72 @@ var specDirHints = map[string]bool{
 const maxSpecBytes = 32 << 20 // guard against pathological files
 
 type inputResult struct {
-	report  InputReport
-	sources []*builtSource
+	report            InputReport
+	sources           []*builtSource
+	gaps              []Gap
+	postmanCandidates int
 }
 
-func scanInput(input, scanPath, kindHint string, opts Options) (*inputResult, error) {
+// fileIndex is the result of the single tree walk each input gets. Every
+// detector reads from it instead of re-walking, so discovery stays one pass.
+type fileIndex struct {
+	specs     []string
+	protos    []string
+	graphql   []string
+	jsons     []string
+	sources   []string // L2 candidates, capped at l2MaxFiles
+	truncated bool     // source set hit the cap; L2 saw only a prefix
+}
+
+func indexFiles(rootDir string) *fileIndex {
+	idx := &fileIndex{}
+	var st ignoreStack
+	st.seedParents(rootDir)
+	_ = filepath.WalkDir(rootDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			name := d.Name()
+			if path != rootDir && (ignoreDirs[name] || strings.HasPrefix(name, ".")) {
+				return fs.SkipDir
+			}
+			st.enter(path)
+			if path != rootDir && st.ignored(path, true) {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if st.ignored(path, false) {
+			return nil
+		}
+		switch {
+		case isProtoFile(path):
+			idx.protos = append(idx.protos, path)
+		case isGraphQLFile(path):
+			idx.graphql = append(idx.graphql, path)
+		case isSourceFile(path):
+			idx.sources = append(idx.sources, path)
+		}
+		if isJSONFile(path) {
+			idx.jsons = append(idx.jsons, path)
+		}
+		if looksLikeSpecFile(path) {
+			idx.specs = append(idx.specs, path)
+		}
+		return nil
+	})
+	for _, l := range []*[]string{&idx.specs, &idx.protos, &idx.graphql, &idx.jsons, &idx.sources} {
+		sort.Strings(*l)
+	}
+	if len(idx.sources) > l2MaxFiles {
+		idx.sources = idx.sources[:l2MaxFiles]
+		idx.truncated = true
+	}
+	return idx
+}
+
+func scanInput(input, inputKey, scanPath, kindHint string, opts Options) (*inputResult, error) {
 	abs, err := filepath.Abs(scanPath)
 	if err != nil {
 		return nil, fmt.Errorf("resolve %q: %w", input, err)
@@ -62,75 +123,114 @@ func scanInput(input, scanPath, kindHint string, opts Options) (*inputResult, er
 		ir.report.Origin = &Origin{Type: "repo_url", RepoURL: git.repoURL, PinnedTag: git.pinnedTag, RefKind: git.refKind}
 	} else {
 		ir.report.Origin = &Origin{Type: "local_path", LocalPath: abs}
+		// A worktree we could not pin still scans fine, but the result is not
+		// reproducible from the origin alone — say so instead of staying silent.
+		if kind == "dir" && isGitWorktree(abs) {
+			ir.gaps = append(ir.gaps, Gap{Kind: gapNoImmutableRef, Scope: "input", Ref: input,
+				Message:  "git worktree has no remote or no immutable ref at HEAD; emitted local_path instead of repo_url + pinned_tag",
+				Blocking: false})
+		}
 	}
 
-	cands, parsedByPath := parseCandidates(discover(abs), root)
+	idx := indexFiles(abs)
+
+	cands, parsedByPath := parseCandidates(idx.specs, root)
 	dedupCandidates(cands, parsedByPath)
 	ir.report.Candidates = append(ir.report.Candidates, cands...)
 	for i := range cands {
 		c := &cands[i]
-		if !c.Parsed || c.DuplicateOf != "" {
+		if c.DuplicateOf != "" {
 			continue
 		}
-		b := buildSource(c, parsedByPath[c.Path], root, git)
-		b.fromInput = input
-		ir.sources = append(ir.sources, b)
+		if !c.Parsed {
+			// The usual reason a scan comes back empty; the human reads GAPS.md,
+			// not candidates[] in the JSON.
+			ir.gaps = append(ir.gaps, Gap{Kind: gapParseError, Scope: "input", Ref: c.Path,
+				Message: c.Error, Blocking: true})
+			continue
+		}
+		ir.add(buildSource(c, parsedByPath[c.Path], root, git), input)
 	}
 
-	if gfiles := discoverGraphQL(abs); len(gfiles) > 0 {
-		b, cand := buildGraphQLSource(gfiles, root, git)
+	if len(idx.graphql) > 0 {
+		b, cand := buildGraphQLSource(idx.graphql, root, git)
 		if cand != nil {
 			ir.report.Candidates = append(ir.report.Candidates, *cand)
 		}
-		if b != nil {
-			b.fromInput = input
-			ir.sources = append(ir.sources, b)
-		}
+		ir.add(b, input)
 	}
 
-	if pfiles := discoverProto(abs); len(pfiles) > 0 {
-		b, cand := buildProtoSource(pfiles, root, git)
+	if len(idx.protos) > 0 {
+		b, cand, gaps := buildProtoSource(idx.protos, root, git)
 		if cand != nil {
 			ir.report.Candidates = append(ir.report.Candidates, *cand)
 		}
-		if b != nil {
-			b.fromInput = input
-			ir.sources = append(ir.sources, b)
-		}
+		ir.gaps = append(ir.gaps, gaps...)
+		ir.add(b, input)
 	}
 
-	if pmSources, pmCands := buildPostmanSources(discoverPostman(abs), root); len(pmSources) > 0 || len(pmCands) > 0 {
-		ir.report.Candidates = append(ir.report.Candidates, pmCands...)
-		for _, b := range pmSources {
-			b.fromInput = input
-			ir.sources = append(ir.sources, b)
-		}
+	pmSources, pmCands := buildPostmanSources(postmanFiles(idx), root)
+	ir.report.Candidates = append(ir.report.Candidates, pmCands...)
+	ir.postmanCandidates = len(pmCands)
+	for _, b := range pmSources {
+		ir.add(b, input)
 	}
 
 	// L2 only when L1 produced nothing usable.
-	if !anyUsable(ir.sources) {
-		if b, cand := runL2(abs, input); b != nil {
-			if cand != nil {
-				ir.report.Candidates = append(ir.report.Candidates, *cand)
-			}
-			b.fromInput = input
-			ir.sources = append(ir.sources, b)
+	ir.dropBlocked()
+	if len(ir.sources) == 0 {
+		b, cand := runL2(idx, input, abs)
+		if cand != nil {
+			ir.report.Candidates = append(ir.report.Candidates, *cand)
+		}
+		ir.add(b, input)
+		ir.dropBlocked()
+		// "Found nothing" and "only looked at part of it" are different answers,
+		// and with no source there is nothing to carry the truncation gap.
+		if len(ir.sources) == 0 && idx.truncated {
+			ir.gaps = append(ir.gaps, Gap{Kind: gapScanTruncated, Scope: "input", Ref: input,
+				Message:  fmt.Sprintf("only the first %d source files were analyzed and no routes were found among them; any defined beyond the cap were never seen", l2MaxFiles),
+				Blocking: true})
 		}
 	}
 
-	if best := recommend(ir.sources); best != nil {
+	for _, b := range ir.sources {
+		b.inputKey = inputKey
+	}
+	if best := recommend(ir.sources, opts.Prefer); best != nil {
 		best.report.Recommended = true
 	}
 	return ir, nil
 }
 
-func anyUsable(sources []*builtSource) bool {
-	for _, b := range sources {
-		if b.report.WouldEmitCommands > 0 && !hasBlocking(b.report.Gaps) {
-			return true
+func (ir *inputResult) add(b *builtSource, input string) {
+	if b == nil {
+		return
+	}
+	b.fromInput = input
+	ir.sources = append(ir.sources, b)
+}
+
+// dropBlocked removes sources Lathe would reject or generate nothing from and
+// promotes their blocking gaps to the report's top level: emitting them hands
+// back an ungeneratable manifest, dropping them silently hides why.
+func (ir *inputResult) dropBlocked() {
+	kept := ir.sources[:0]
+	for _, b := range ir.sources {
+		if !hasBlocking(b.report.Gaps) {
+			kept = append(kept, b)
+			continue
+		}
+		for _, g := range b.report.Gaps {
+			if !g.Blocking {
+				continue
+			}
+			g.Scope = "source"
+			g.Ref = b.baseName
+			ir.gaps = append(ir.gaps, g)
 		}
 	}
-	return false
+	ir.sources = kept
 }
 
 func readCapped(path string) ([]byte, error) {
@@ -144,19 +244,37 @@ func readCapped(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-func recommend(sources []*builtSource) *builtSource {
+// recommend picks one source per input. --prefer breaks ties on backend ahead of
+// the built-in priority, but never overrides a source that would emit more
+// commands: a preferred backend that generates less is still the worse choice.
+func recommend(sources []*builtSource, prefer string) *builtSource {
 	prio := map[string]int{"openapi3": 4, "swagger": 3, "graphql": 2, "proto": 1}
+	rank := func(b *builtSource) (int, int) {
+		preferred := 0
+		if prefer != "" && b.yc.Backend == prefer {
+			preferred = 1
+		}
+		return preferred, prio[b.yc.Backend]
+	}
 	var best *builtSource
 	for _, b := range sources {
-		switch {
-		case best == nil:
+		if best == nil {
 			best = b
+			continue
+		}
+		bPref, bPrio := rank(b)
+		cPref, cPrio := rank(best)
+		switch {
 		case b.report.WouldEmitCommands != best.report.WouldEmitCommands:
 			if b.report.WouldEmitCommands > best.report.WouldEmitCommands {
 				best = b
 			}
-		case prio[b.yc.Backend] != prio[best.yc.Backend]:
-			if prio[b.yc.Backend] > prio[best.yc.Backend] {
+		case bPref != cPref:
+			if bPref > cPref {
+				best = b
+			}
+		case bPrio != cPrio:
+			if bPrio > cPrio {
 				best = b
 			}
 		case b.baseName < best.baseName:
@@ -164,34 +282,6 @@ func recommend(sources []*builtSource) *builtSource {
 		}
 	}
 	return best
-}
-
-func walkFiles(rootDir string, keep func(path string) bool) []string {
-	var out []string
-	_ = filepath.WalkDir(rootDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			name := d.Name()
-			if path != rootDir && (ignoreDirs[name] || (strings.HasPrefix(name, ".") && name != ".")) {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if keep(path) {
-			out = append(out, path)
-		}
-		return nil
-	})
-	sort.Strings(out)
-	return out
-}
-
-func discover(rootDir string) []string      { return walkFiles(rootDir, looksLikeSpecFile) }
-func discoverProto(rootDir string) []string { return walkFiles(rootDir, isProtoFile) }
-func discoverGraphQL(rootDir string) []string {
-	return walkFiles(rootDir, isGraphQLFile)
 }
 
 func looksLikeSpecFile(path string) bool {
@@ -221,8 +311,8 @@ func parseCandidates(files []string, root string) ([]Candidate, map[string]*pars
 	parsedByPath := map[string]*parsed{}
 	for _, f := range files {
 		rel := relOrBase(root, f)
-		data, err := os.ReadFile(f)
-		if err != nil || len(data) > maxSpecBytes {
+		data, err := readCapped(f)
+		if err != nil {
 			continue
 		}
 		p, perr := parseSpec(data)

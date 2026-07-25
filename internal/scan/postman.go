@@ -10,9 +10,9 @@ import (
 // Postman is not Lathe-native: convert each collection to a synthesized OpenAPI 3
 // draft (always local_path, medium confidence), same shape as L2.
 
-func discoverPostman(rootDir string) []string {
+func postmanFiles(idx *fileIndex) []string {
 	var out []string
-	for _, f := range walkFiles(rootDir, isJSONFile) {
+	for _, f := range idx.jsons {
 		data, err := readCapped(f)
 		if err != nil {
 			continue
@@ -61,14 +61,19 @@ func buildPostmanSources(files []string, root string) ([]*builtSource, []Candida
 		if err != nil {
 			continue
 		}
+		rel := relOrBase(root, f)
 		var col pmCollection
 		if err := json.Unmarshal(data, &col); err != nil {
-			cands = append(cands, Candidate{Path: relOrBase(root, f), Format: "postman", Parsed: false, Error: err.Error()})
+			cands = append(cands, Candidate{Path: rel, Format: "postman", Parsed: false, Error: err.Error()})
 			continue
 		}
-		routes := dedupeRoutes(collectPostmanRoutes(col.Item))
+		routes := collectPostmanRoutes(col.Item)
+		for i := range routes {
+			routes[i].file = rel
+		}
+		routes = dedupeRoutes(routes)
 		cand := Candidate{
-			Path: relOrBase(root, f), Format: "postman", Parsed: true,
+			Path: rel, Format: "postman", Parsed: true,
 			Metrics: &Metrics{Operations: len(routes)},
 			Reason:  fmt.Sprintf("postman collection, %d requests", len(routes)),
 		}
@@ -77,10 +82,11 @@ func buildPostmanSources(files []string, root string) ([]*builtSource, []Candida
 			continue
 		}
 
-		name := firstNonEmpty(sanitizeName(col.Info.Name), sanitizeName(parentDirName(relOrBase(root, f))), "postman")
+		name := firstNonEmpty(sanitizeName(col.Info.Name), sanitizeName(parentDirName(rel)), "postman")
 		draft := synthesizeOpenAPI(name, "postman", routes)
 		b := &builtSource{
 			baseName: name,
+			identity: rel,
 			origin:   &Origin{Type: "local_path"},
 			yc:       &ycSource{Backend: "openapi3", OpenAPI3: &filesBlock{Files: []string{l2DraftName}}},
 			synth:    []synthFile{{relTo: l2DraftName, content: draft}},

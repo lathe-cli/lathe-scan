@@ -29,9 +29,12 @@ func Run(args []string) int {
 	cmd := &cobra.Command{
 		Use:   "lathe-scan <input>... --out <dir>",
 		Short: "Discover API specs across repos and emit a draft Lathe sources.yaml",
-		Long: "lathe-scan reads one or more repo directories (offline, read-only) and " +
-			"aggregates every discoverable API into a single draft Lathe sources.yaml, " +
-			"plus report.json and GAPS.md for human confirmation.",
+		Long: "lathe-scan reads one or more repo directories or zip archives (offline, " +
+			"read-only) and aggregates every discoverable API into a single draft Lathe " +
+			"sources.yaml, plus report.json and GAPS.md for human confirmation.",
+		// tool_version in report.json is the audit anchor; the binary must be able
+		// to state which version produced a given report.
+		Version:       scan.Version(),
 		Args:          cobra.MinimumNArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
