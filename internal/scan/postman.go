@@ -10,10 +10,10 @@ import (
 // Postman is not Lathe-native: convert each collection to a synthesized OpenAPI 3
 // draft (always local_path, medium confidence), same shape as L2.
 
-func postmanFiles(idx *fileIndex) []string {
+func postmanFiles(idx *fileIndex, root string) []string {
 	var out []string
 	for _, f := range idx.jsons {
-		data, err := readCapped(f)
+		data, err := readWithin(root, f)
 		if err != nil {
 			continue
 		}
@@ -57,7 +57,7 @@ func buildPostmanSources(files []string, root string) ([]*builtSource, []Candida
 	var sources []*builtSource
 	var cands []Candidate
 	for _, f := range files {
-		data, err := readCapped(f)
+		data, err := readWithin(root, f)
 		if err != nil {
 			continue
 		}

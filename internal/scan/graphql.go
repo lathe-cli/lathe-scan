@@ -2,7 +2,6 @@ package scan
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -15,8 +14,8 @@ import (
 func buildGraphQLSource(files []string, root string, git *gitOrigin) (*builtSource, *Candidate) {
 	var sources []*ast.Source
 	for _, f := range files {
-		data, err := os.ReadFile(f)
-		if err != nil || len(data) > maxSpecBytes {
+		data, err := readWithin(root, f)
+		if err != nil {
 			continue
 		}
 		sources = append(sources, &ast.Source{Name: relOrBase(root, f), Input: string(data)})
@@ -53,7 +52,13 @@ func buildGraphQLSource(files []string, root string, git *gitOrigin) (*builtSour
 		Schema: primary,
 		Expose: graphqlExpose{Queries: queries, Mutations: mutations},
 	}
-	if git != nil {
+	// The whole schema set is the closure Lathe needs, not just the primary file.
+	closure := make([]string, 0, len(sources))
+	for _, s := range sources {
+		closure = append(closure, s.Name)
+	}
+	pinned := git.pinnable(closure)
+	if pinned {
 		b.origin = &Origin{Type: "repo_url", RepoURL: git.repoURL, PinnedTag: git.pinnedTag, RefKind: git.refKind}
 		b.yc.RepoURL = git.repoURL
 		b.yc.PinnedTag = git.pinnedTag
@@ -76,6 +81,9 @@ func buildGraphQLSource(files []string, root string, git *gitOrigin) (*builtSour
 	if len(sources) > 1 {
 		gaps = append(gaps, Gap{Kind: gapGraphQLSplit, Scope: "source",
 			Message: fmt.Sprintf("schema is split across %d files; Lathe loads only graphql.schema=%s, so merge them first", len(sources), block.Schema), Blocking: true})
+	}
+	if g, ok := notAtRefGap(git, pinned); ok {
+		gaps = append(gaps, g)
 	}
 
 	b.report = &SourceReport{
@@ -111,7 +119,7 @@ func pickPrimaryGraphQL(files []string, root string) string {
 		if first == "" {
 			first = rel
 		}
-		data, err := os.ReadFile(f)
+		data, err := readWithin(root, f)
 		if err != nil {
 			continue
 		}

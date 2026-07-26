@@ -108,6 +108,11 @@ func scanInput(input, inputKey, scanPath, kindHint string, opts Options) (*input
 	if !info.IsDir() {
 		return nil, fmt.Errorf("input is not a directory: %s", input)
 	}
+	// Every later boundary check compares physical paths, and git reports a
+	// physical toplevel; resolving once here keeps the two in the same space.
+	if abs, err = physicalRoot(abs); err != nil {
+		return nil, fmt.Errorf("resolve %q: %w", input, err)
+	}
 
 	// Zip is an extracted snapshot: always local_path, never a pinnable repo.
 	var git *gitOrigin
@@ -169,7 +174,7 @@ func scanInput(input, inputKey, scanPath, kindHint string, opts Options) (*input
 		ir.add(b, input)
 	}
 
-	pmSources, pmCands := buildPostmanSources(postmanFiles(idx), root)
+	pmSources, pmCands := buildPostmanSources(postmanFiles(idx, root), root)
 	ir.report.Candidates = append(ir.report.Candidates, pmCands...)
 	ir.postmanCandidates = len(pmCands)
 	for _, b := range pmSources {
@@ -311,8 +316,13 @@ func parseCandidates(files []string, root string) ([]Candidate, map[string]*pars
 	parsedByPath := map[string]*parsed{}
 	for _, f := range files {
 		rel := relOrBase(root, f)
-		data, err := readCapped(f)
+		data, err := readWithin(root, f)
 		if err != nil {
+			// A candidate that resolves outside the tree is refused, not skipped:
+			// silently dropping it reads as "there was nothing there".
+			if !pathWithin(root, f) {
+				cands = append(cands, Candidate{Path: rel, Format: "unknown", Parsed: false, Error: err.Error()})
+			}
 			continue
 		}
 		p, perr := parseSpec(data)

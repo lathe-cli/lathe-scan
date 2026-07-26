@@ -1,6 +1,7 @@
 package scan
 
 import (
+	"gopkg.in/yaml.v3"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -155,5 +156,122 @@ paths:
 	}
 	if !hasGap(rep.Gaps, gapRefUnresolved, true) {
 		t.Errorf("expected blocking ref-unresolved gap, got %+v", rep.Gaps)
+	}
+}
+
+// A schema hoisted out of an external file carries its own "#/..." refs with it.
+// Those are relative to the file they came from, so once the fragment lands in
+// the root document they must be re-resolved against that file — not silently
+// re-pointed at whatever the root happens to call the same name. Here the root's
+// Address is a string and the external one is an object: getting this wrong
+// hands the caller a spec that type-checks and means something else.
+func TestBundleDoesNotShadowExternalSchemaWithRootName(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "openapi.yaml", `openapi: 3.0.3
+info: { title: Shadow Probe, version: 1.0.0 }
+paths:
+  /users:
+    get:
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/user.yaml#/components/schemas/User"
+components:
+  schemas:
+    Address:
+      type: string
+      description: root document schema with the same name
+`)
+	writeFile(t, dir, "schemas/user.yaml", `components:
+  schemas:
+    User:
+      type: object
+      properties:
+        address:
+          $ref: "#/components/schemas/Address"
+    Address:
+      type: object
+      properties:
+        city: { type: string }
+`)
+
+	out, _, missing, err := bundleSpec(filepath.Join(dir, "openapi.yaml"), "openapi3", dir)
+	if err != nil {
+		t.Fatalf("bundleSpec: %v", err)
+	}
+	if len(missing) != 0 {
+		t.Fatalf("unexpected missing refs: %v", missing)
+	}
+
+	var doc struct {
+		Components struct {
+			Schemas map[string]struct {
+				Type       string `yaml:"type"`
+				Properties map[string]struct {
+					Ref string `yaml:"$ref"`
+				} `yaml:"properties"`
+			} `yaml:"schemas"`
+		} `yaml:"components"`
+	}
+	if err := yaml.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("bundled spec does not parse: %v", err)
+	}
+	ref := doc.Components.Schemas["User"].Properties["address"].Ref
+	if ref == "" {
+		t.Fatalf("User.address lost its $ref:\n%s", out)
+	}
+	target := doc.Components.Schemas[strings.TrimPrefix(ref, "#/components/schemas/")]
+	if target.Type != "object" {
+		t.Errorf("User.address resolved to %q, want the external object schema; ref=%s\n%s", target.Type, ref, out)
+	}
+	if doc.Components.Schemas["Address"].Type != "string" {
+		t.Errorf("the root document's own Address was overwritten:\n%s", out)
+	}
+}
+
+// Identical inputs must produce identical bytes. Hoisted names are assigned in
+// walk order, so an unordered map walk hands the unsuffixed name to a different
+// schema from run to run.
+func TestBundleSpecIsDeterministic(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "openapi.yaml", `openapi: 3.0.3
+info: { title: Determinism Probe, version: 1.0.0 }
+paths:
+  /a:
+    get:
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "./a.yaml#/components/schemas/Error" }
+  /b:
+    get:
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: "./b.yaml#/components/schemas/Error" }
+`)
+	writeFile(t, dir, "a.yaml", "components:\n  schemas:\n    Error:\n      type: object\n      properties:\n        from_a: { type: string }\n")
+	writeFile(t, dir, "b.yaml", "components:\n  schemas:\n    Error:\n      type: object\n      properties:\n        from_b: { type: string }\n")
+
+	var first string
+	for i := range 50 {
+		out, _, missing, err := bundleSpec(filepath.Join(dir, "openapi.yaml"), "openapi3", dir)
+		if err != nil || len(missing) != 0 {
+			t.Fatalf("bundleSpec: %v missing=%v", err, missing)
+		}
+		if i == 0 {
+			first = string(out)
+			continue
+		}
+		if string(out) != first {
+			t.Fatalf("bundling is not deterministic; run %d differs:\n--- first ---\n%s\n--- run %d ---\n%s", i, first, i, out)
+		}
 	}
 }

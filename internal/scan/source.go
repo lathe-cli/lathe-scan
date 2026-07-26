@@ -77,7 +77,8 @@ func buildSource(c *Candidate, p *parsed, root string, git *gitOrigin) *builtSou
 	}
 
 	block := &filesBlock{Files: []string{c.Path}}
-	if git != nil {
+	pinned := git.pinnable(block.Files)
+	if pinned {
 		b.origin = &Origin{Type: "repo_url", RepoURL: git.repoURL, PinnedTag: git.pinnedTag, RefKind: git.refKind}
 		b.yc.RepoURL = git.repoURL
 		b.yc.PinnedTag = git.pinnedTag
@@ -112,13 +113,40 @@ func buildSource(c *Candidate, p *parsed, root string, git *gitOrigin) *builtSou
 			Blocking: true})
 	}
 	if p.hostname == "" {
-		gaps = append(gaps, Gap{Kind: gapAmbiguousHost, Scope: "source",
-			Message: "no server hostname detected; set default_hostname before relying on auth", Blocking: false})
+		gaps = append(gaps, Gap{Kind: gapAmbiguousHost, Scope: "source", Message: hostGapMessage(p), Blocking: false})
+	}
+	if g, ok := notAtRefGap(git, pinned); ok {
+		gaps = append(gaps, g)
 	}
 	sr.Gaps = gaps
 	sr.Confidence = confidenceFor(p.wouldEmit, gaps)
 	b.report = sr
 	return b
+}
+
+// hostGapMessage distinguishes "the spec named no server" from "the spec named
+// several and scan will not pick for you"; the second needs the candidates, or
+// the user cannot act on it without reopening the spec.
+func hostGapMessage(p *parsed) string {
+	if len(p.hostCandidates) > 1 {
+		return fmt.Sprintf("servers declare %d different hostnames (%s); set default_hostname to the one you mean before relying on auth",
+			len(p.hostCandidates), strings.Join(p.hostCandidates, ", "))
+	}
+	return "no server hostname detected; set default_hostname before relying on auth"
+}
+
+// notAtRefGap explains a fallback that would otherwise look arbitrary: the input
+// is a pinnable repository, yet this source shipped as copied files. Saying so
+// is the difference between "scan chose local_path" and "these files are not in
+// your repository at that commit", which is usually news to the user.
+func notAtRefGap(git *gitOrigin, pinned bool) (Gap, bool) {
+	if git == nil || pinned {
+		return Gap{}, false
+	}
+	return Gap{Kind: gapOriginNotAtRef, Scope: "source",
+		Message: "source files are untracked, ignored, or locally modified, so they are not retrievable from " +
+			git.repoURL + " at " + git.pinnedTag + "; emitted local_path with copies of the scanned bytes instead",
+		Blocking: false}, true
 }
 
 // bundleSource returns nil when the closure cannot be fully resolved so
@@ -152,8 +180,7 @@ func bundleSource(c *Candidate, p *parsed, root string) *builtSource {
 		Message:  fmt.Sprintf("bundled from %d files into one self-contained spec; verify the merged result", len(files)),
 		Blocking: false}}
 	if p.hostname == "" {
-		gaps = append(gaps, Gap{Kind: gapAmbiguousHost, Scope: "source",
-			Message: "no server hostname detected; set default_hostname before relying on auth", Blocking: false})
+		gaps = append(gaps, Gap{Kind: gapAmbiguousHost, Scope: "source", Message: hostGapMessage(p), Blocking: false})
 	}
 	b.report = &SourceReport{
 		Backend: p.format, Level: "L1",

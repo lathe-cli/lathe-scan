@@ -19,14 +19,17 @@ var httpMethods = map[string]bool{
 }
 
 type parsed struct {
-	format      string
-	title       string
-	metrics     Metrics
-	wouldEmit   int
-	hostname    string
-	hasExtRefs  bool
-	contentHash string
-	opsig       string // hash of the sorted METHOD+path set; dedups json/yaml copies
+	format    string
+	title     string
+	metrics   Metrics
+	wouldEmit int
+	hostname  string
+	// hostCandidates is set only when servers declare more than one host, i.e.
+	// exactly when hostname is deliberately left empty.
+	hostCandidates []string
+	hasExtRefs     bool
+	contentHash    string
+	opsig          string // hash of the sorted METHOD+path set; dedups json/yaml copies
 }
 
 // Lenient like Lathe: minimal structs, unknown fields ignored. (nil, nil) when
@@ -75,11 +78,34 @@ func parseOAS3(data []byte, hash string) (*parsed, error) {
 	p.metrics.Operations = countOperations(doc.Paths)
 	p.opsig = operationSignature(doc.Paths)
 	p.wouldEmit = p.metrics.Operations
-	if len(doc.Servers) > 0 {
-		p.hostname = hostFromURL(doc.Servers[0].URL)
+	urls := make([]string, 0, len(doc.Servers))
+	for _, s := range doc.Servers {
+		urls = append(urls, s.URL)
 	}
+	p.hostname, p.hostCandidates = unambiguousHost(urls)
 	p.hasExtRefs = hasExternalRefs(data)
 	return p, nil
+}
+
+// unambiguousHost extracts default_hostname only when the servers agree on one
+// host. Picking servers[0] would be the tool deciding, by list order, where
+// authenticated commands are sent — and the first entry is conventionally
+// production. When they disagree the field is left unset and the candidates are
+// reported, so the choice stays with whoever knows which one they meant.
+func unambiguousHost(urls []string) (host string, candidates []string) {
+	seen := map[string]bool{}
+	for _, raw := range urls {
+		h := hostFromURL(raw)
+		if h == "" || seen[h] {
+			continue
+		}
+		seen[h] = true
+		candidates = append(candidates, h)
+	}
+	if len(candidates) == 1 {
+		return candidates[0], nil
+	}
+	return "", candidates
 }
 
 func parseSwagger2(data []byte, hash string) (*parsed, error) {

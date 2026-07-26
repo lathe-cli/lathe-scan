@@ -117,6 +117,7 @@ const (
 	gapPostmanConvert   = "postman-needs-conversion"
 	gapAmbiguousHost    = "ambiguous-hostname"
 	gapNoImmutableRef   = "no-immutable-ref"
+	gapOriginNotAtRef   = "origin-file-not-at-ref"
 	gapParseError       = "parse-error"
 	gapRefUnresolved    = "ref-closure-unresolved"
 	gapGraphQLSplit     = "graphql-split-schema"
