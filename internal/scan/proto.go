@@ -2,7 +2,6 @@ package scan
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -33,8 +32,8 @@ func buildProtoSource(files []string, root string, git *gitOrigin) (*builtSource
 	var methods, httpMethods, services int
 	var imports []string
 	for _, f := range files {
-		data, err := os.ReadFile(f)
-		if err != nil || len(data) > maxSpecBytes {
+		data, err := readWithin(root, f)
+		if err != nil {
 			continue
 		}
 		info := analyzeProto(relOrBase(root, f), data)
@@ -97,7 +96,15 @@ func buildProtoSource(files []string, root string, git *gitOrigin) (*builtSource
 		yc:       &ycSource{Backend: "proto"},
 	}
 	block := &protoBlock{Entries: entries}
-	if git != nil {
+	// The closure is every .proto staged into the tree, keyed repo-relative.
+	closure := make([]string, 0, len(files))
+	for _, f := range files {
+		if rel, err := filepath.Rel(root, f); err == nil {
+			closure = append(closure, filepath.ToSlash(rel))
+		}
+	}
+	pinned := git.pinnable(closure)
+	if pinned {
 		b.origin = &Origin{Type: "repo_url", RepoURL: git.repoURL, PinnedTag: git.pinnedTag, RefKind: git.refKind}
 		b.yc.RepoURL = git.repoURL
 		b.yc.PinnedTag = git.pinnedTag
@@ -117,14 +124,18 @@ func buildProtoSource(files []string, root string, git *gitOrigin) (*builtSource
 	}
 	b.yc.Proto = block
 
+	gaps := []Gap{{Kind: gapProtoImports, Scope: "source",
+		Message: "staging and import roots were inferred statically; run `lathe sync-specs` (needs protoc) to verify the tree compiles", Blocking: false}}
+	if g, ok := notAtRefGap(git, pinned); ok {
+		gaps = append(gaps, g)
+	}
 	b.report = &SourceReport{
 		Level: "L1", Backend: "proto",
 		WouldEmitCommands: httpMethods,
 		Files:             entries,
 		Metrics:           &Metrics{Operations: methods},
-		Gaps: []Gap{{Kind: gapProtoImports, Scope: "source",
-			Message: "staging and import roots were inferred statically; run `lathe sync-specs` (needs protoc) to verify the tree compiles", Blocking: false}},
-		Confidence: confMedium,
+		Gaps:              gaps,
+		Confidence:        confMedium,
 	}
 	return b, cand, nil
 }

@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -31,21 +32,26 @@ func makeZip(t *testing.T, entries map[string]string) string {
 	return path
 }
 
+// A hostile archive is refused outright rather than partly extracted: scanning
+// the innocent remainder would report success over a subset the user never chose,
+// with nothing on the record saying entries were dropped.
 func TestExtractZipRejectsTraversal(t *testing.T) {
 	zp := makeZip(t, map[string]string{
 		"svc/openapi.yaml": specOpenAPI,
 		"../evil.txt":      "pwned", // Zip Slip attempt
 	})
 	dir, cleanup, err := extractZip(zp)
-	if err != nil {
-		t.Fatalf("extractZip: %v", err)
+	if err == nil {
+		cleanup()
+		t.Fatal("extractZip accepted an archive containing a traversal entry")
 	}
-	defer cleanup()
-
-	if _, err := os.Stat(filepath.Join(dir, "svc", "openapi.yaml")); err != nil {
-		t.Errorf("legit file missing: %v", err)
+	if !strings.Contains(err.Error(), "escapes the archive root") {
+		t.Errorf("error does not say why the archive was refused: %v", err)
 	}
-	// The traversal entry must not have escaped the extraction dir.
+	if dir != "" {
+		t.Errorf("a refused archive must not hand back an extraction dir, got %q", dir)
+	}
+	// Nothing may have escaped, whether or not extraction stopped early.
 	if _, err := os.Stat(filepath.Join(filepath.Dir(dir), "evil.txt")); err == nil {
 		t.Error("Zip Slip: evil.txt written outside extraction dir")
 	}

@@ -6,6 +6,7 @@ package scan
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -45,6 +46,11 @@ func Execute(opts Options) error {
 	}
 	if opts.Prefer != "" && !preferBackends[opts.Prefer] {
 		return fmt.Errorf("--prefer %q: want one of openapi3, swagger, proto, graphql", opts.Prefer)
+	}
+	// Checked before anything is read so --out being a file reports the same way
+	// whether or not --merge made us touch it first.
+	if info, err := os.Stat(opts.Out); err == nil && !info.IsDir() {
+		return ErrWrite{err: fmt.Errorf("--out is not a directory: %s", opts.Out)}
 	}
 
 	// Non-nil so report.json carries [] rather than null: an empty list is a
@@ -88,11 +94,14 @@ func Execute(opts Options) error {
 	sort.Slice(built, func(i, j int) bool {
 		return built[i].sortKey() < built[j].sortKey()
 	})
+	// Refusals here ("--merge cannot reconcile this --out") stay usage errors:
+	// the state is intact and the user changes the command. Genuine write-path
+	// failures are caught by the --out check above and by writeOutputs.
 	prior, err := loadPriorRun(opts, inputKeys, built)
 	if err != nil {
 		return err
 	}
-	final := assignNames(built, prior)
+	final := assignNames(opts, built, prior)
 
 	written, err := writeOutputs(opts, final, built, prior, report, postmanCandidates)
 	if err != nil {

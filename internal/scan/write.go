@@ -99,11 +99,28 @@ func loadPriorRun(opts Options, inputKeys map[string]bool, built []*builtSource)
 	if !opts.Merge {
 		return pr, nil
 	}
+
+	// The manifest is read first because it decides how severe an unreadable
+	// report is: with entries on disk, a report we cannot parse means ownership is
+	// unrecoverable; with no entries there is nothing to own.
+	sf, err := loadExistingSources(filepath.Join(opts.Out, sourcesFileName))
+	if err != nil {
+		return nil, err
+	}
+
 	// Ownership comes from both sources[] and preserved[]: reading only the first
 	// loses every source after the run that stopped rebuilding it, so scanning A,
 	// then B, then A again would no longer recognize A's own entry.
 	ownedByName := map[string]*Provenance{}
-	prev := loadPreviousReport(filepath.Join(opts.Out, reportFileName))
+	prev, rerr := loadPreviousReport(filepath.Join(opts.Out, reportFileName))
+	if rerr != nil && len(sf.Sources) > 0 {
+		// "Absent" is a legitimate state (a hand-written manifest); "present but
+		// unreadable" is a damaged one. Carrying on would treat every owned entry as
+		// foreign and append a duplicate beside it on the next scan — exactly the
+		// loss --merge exists to prevent.
+		return nil, fmt.Errorf("%s could not be read (%v), so --merge cannot tell which of the %d entries in %s it wrote and would append duplicates; restore or delete %s, or re-run without --merge to rebuild the manifest from this scan (add --force to overwrite a non-empty --out)",
+			filepath.Join(opts.Out, reportFileName), rerr, len(sf.Sources), sourcesFileName, reportFileName)
+	}
 	unowned := 0
 	for _, s := range prev.Sources {
 		// A sources[] entry without provenance predates the field.
@@ -122,10 +139,6 @@ func loadPriorRun(opts Options, inputKeys map[string]bool, built []*builtSource)
 		}
 	}
 
-	sf, err := loadExistingSources(filepath.Join(opts.Out, sourcesFileName))
-	if err != nil {
-		return nil, err
-	}
 	// A pre-provenance report cannot say which manifest entries are ours, and the
 	// old format recorded nothing that lets ownership be reconstructed. Guessing
 	// would re-point a name at a different API; carrying on would append billing_2
@@ -157,24 +170,35 @@ func loadPriorRun(opts Options, inputKeys map[string]bool, built []*builtSource)
 	return pr, nil
 }
 
-// loadPreviousReport reads this tool's own report from --out. A missing or
-// unreadable report simply means "no prior run to reconcile with".
-func loadPreviousReport(path string) *Report {
-	empty := &Report{}
+// loadPreviousReport reads this tool's own report from --out. A missing report
+// means "no prior run to reconcile with" and is not an error; anything else is
+// returned so the caller can decide, since whether a damaged report is fatal
+// depends on there being a manifest whose ownership it alone can explain.
+func loadPreviousReport(path string) (*Report, error) {
 	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return &Report{}, nil
+	}
 	if err != nil {
-		return empty
+		return &Report{}, err
 	}
 	var r Report
 	if err := json.Unmarshal(data, &r); err != nil {
-		return empty
+		return &Report{}, err
 	}
-	return &r
+	return &r, nil
 }
 
 // assignNames reuses the name a previous run gave each source so --merge updates
 // entries in place, and only then falls back to fresh, collision-free names.
-func assignNames(built []*builtSource, prior *priorRun) map[string]yaml.Node {
+//
+// A source name is not only a manifest key: a local_path source also copies its
+// files into <out>/<name>. So the names already spoken for include every entry
+// in the manifest, every directory those entries point at, and every directory
+// already sitting in --out — including ones left by an earlier run that no
+// manifest mentions. Reusing one of those silently overwrites data this run did
+// not create, which is the same harm as deleting it.
+func assignNames(opts Options, built []*builtSource, prior *priorRun) map[string]yaml.Node {
 	final := map[string]yaml.Node{}
 	used := map[string]bool{}
 	for name, node := range prior.carried {
@@ -188,6 +212,8 @@ func assignNames(built []*builtSource, prior *priorRun) map[string]yaml.Node {
 		used[name] = true
 	}
 
+	// Reuse-in-place first, so a source that owns <out>/<name> keeps it and is
+	// unaffected by the reservations added below.
 	pending := built[:0:0]
 	for _, b := range built {
 		name, ok := prior.byProv[provKey(b.provenance())]
@@ -198,11 +224,40 @@ func assignNames(built []*builtSource, prior *priorRun) map[string]yaml.Node {
 		b.Name = name
 		used[name] = true
 	}
+
+	for _, name := range occupiedNames(opts, prior) {
+		used[name] = true
+	}
 	for _, b := range pending {
 		b.Name = uniqueName(b.baseName, used)
 		used[b.Name] = true
 	}
 	return final
+}
+
+// occupiedNames lists names a new source must not take: directories referenced
+// by entries we are carrying, and whatever already exists in --out. ReadDir is
+// used rather than a stat per candidate because it names what is there without
+// dereferencing anything — a dangling symlink still occupies its name.
+func occupiedNames(opts Options, prior *priorRun) []string {
+	var out []string
+	for _, node := range prior.carried {
+		if v := mapGet(&node, "local_path"); v != nil && v.Value != "" {
+			out = append(out, filepath.Base(filepath.Clean(v.Value)))
+		}
+	}
+	entries, err := os.ReadDir(opts.Out)
+	if err != nil {
+		return out
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if name == sourcesFileName || name == reportFileName || name == gapsFileName {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
 }
 
 func loadExistingSources(path string) (*sourcesFile, error) {
@@ -286,24 +341,42 @@ func writeOutputs(opts Options, final map[string]yaml.Node, built []*builtSource
 		return 0, fmt.Errorf("remove stale %s: %w", sourcesFileName, rerr)
 	}
 
-	reportJSON, jerr := json.MarshalIndent(report, "", "  ")
-	if jerr != nil {
-		return 0, fmt.Errorf("marshal json: %w", jerr)
-	}
-	reportJSON = append(reportJSON, '\n')
-	if err := writeFileAtomic(filepath.Join(opts.Out, reportFileName), reportJSON); err != nil {
+	// GAPS.md first: it never states the exit code, so it needs no revisiting if
+	// the last delivery below fails.
+	if err := writeFileAtomic(filepath.Join(opts.Out, gapsFileName), []byte(renderGaps(report))); err != nil {
 		return 0, err
 	}
-	if err := writeFileAtomic(filepath.Join(opts.Out, gapsFileName), []byte(renderGaps(report))); err != nil {
+	reportPath := filepath.Join(opts.Out, reportFileName)
+	if err := writeReport(reportPath, report); err != nil {
 		return 0, err
 	}
 
 	if opts.JSON {
+		// --json makes stdout a machine interface, so a failed write is a failed
+		// delivery, not a cosmetic problem. Reporting it means the exit code no
+		// longer matches the report already on disk, and summary.exit_code is
+		// contractually the process result — so correct the file before returning.
+		// The report cannot state the outcome of its own delivery in one pass;
+		// stdout goes last precisely so this is the only case needing a second write.
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		_ = enc.Encode(report)
+		if err := enc.Encode(report); err != nil {
+			report.Summary.ExitCode = exitWriteFailure
+			if rerr := writeReport(reportPath, report); rerr != nil {
+				return 0, fmt.Errorf("write report to stdout: %w (and could not record the failure in %s: %v)", err, reportFileName, rerr)
+			}
+			return 0, fmt.Errorf("write report to stdout: %w", err)
+		}
 	}
 	return len(report.Sources), nil
+}
+
+func writeReport(path string, report *Report) error {
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal json: %w", err)
+	}
+	return writeFileAtomic(path, append(data, '\n'))
 }
 
 // Keys scan derives. Everything else in a source entry belongs to whoever wrote
@@ -372,8 +445,12 @@ func carryTrimmedExpose(b *builtSource, old, fresh *yaml.Node) {
 		Queries:   intersect(prev.Queries, b.yc.GraphQL.Expose.Queries),
 		Mutations: intersect(prev.Mutations, b.yc.GraphQL.Expose.Mutations),
 	}
-	if len(kept.Queries) == len(b.yc.GraphQL.Expose.Queries) &&
-		len(kept.Mutations) == len(b.yc.GraphQL.Expose.Mutations) {
+	// Set equality, not lengths: a manifest that lists an operation twice makes
+	// the counts match the full discovered surface while naming fewer operations,
+	// and "same size" would then read as "not trimmed" and publish everything the
+	// user removed.
+	if sameSet(kept.Queries, b.yc.GraphQL.Expose.Queries) &&
+		sameSet(kept.Mutations, b.yc.GraphQL.Expose.Mutations) {
 		return // not trimmed; nothing to preserve
 	}
 	var node yaml.Node
@@ -442,18 +519,38 @@ func priorExpose(entry *yaml.Node) (e graphqlExpose, ok bool, err error) {
 	return e, true, nil
 }
 
+// intersect returns the members of want that exist in available, each once.
+// De-duplicating matters: these results are compared against the discovered
+// surface to decide whether the user narrowed it, and a repeated entry would
+// otherwise inflate the count past what it actually names.
 func intersect(want, available []string) []string {
 	have := make(map[string]bool, len(available))
 	for _, s := range available {
 		have[s] = true
 	}
+	seen := make(map[string]bool, len(want))
 	var out []string
 	for _, s := range want {
-		if have[s] {
+		if have[s] && !seen[s] {
+			seen[s] = true
 			out = append(out, s)
 		}
 	}
 	return out
+}
+
+func sameSet(a, b []string) bool {
+	set := make(map[string]bool, len(a))
+	for _, s := range a {
+		set[s] = true
+	}
+	for _, s := range b {
+		if !set[s] {
+			return false
+		}
+		delete(set, s)
+	}
+	return len(set) == 0
 }
 
 func mapGet(n *yaml.Node, key string) *yaml.Node {
@@ -531,10 +628,23 @@ func copyLocal(b *builtSource, destDir string) error {
 	return nil
 }
 
+// writeUnder writes one file inside destDir, refusing to follow a symlink out of
+// it. Checking only the final path is not enough: with out/pkg/schemas already a
+// symlink elsewhere, MkdirAll succeeds and WriteFile lands outside --out. Every
+// existing component from destDir down is checked, and the target itself with
+// Lstat, since Stat calls a dangling symlink "absent" and then writes through it.
 func writeUnder(destDir, relTo string, data []byte) error {
 	dest := filepath.Join(destDir, filepath.FromSlash(relTo))
+	if link, err := containsSymlink(destDir, dest); err != nil {
+		return fmt.Errorf("write %s: %w", dest, err)
+	} else if link != "" {
+		return fmt.Errorf("write %s: %s is a symlink; refusing to write through it", dest, link)
+	}
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return err
+	}
+	if info, err := os.Lstat(dest); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("write %s: target is a symlink; refusing to write through it", dest)
 	}
 	if err := os.WriteFile(dest, data, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", dest, err)
@@ -586,13 +696,21 @@ func sortGaps(gaps []Gap) {
 	})
 }
 
+// Mirrors internal/cli's exit contract; report.summary.exit_code has to agree
+// with what the process actually returns.
+const (
+	exitOKCode       = 0
+	exitNoSourceCode = 2
+	exitWriteFailure = 3
+)
+
 // A source left untouched to protect existing policy does not count as written:
 // the run handed the user nothing new.
 func exitCodeFor(written int) int {
 	if written == 0 {
-		return 2
+		return exitNoSourceCode
 	}
-	return 0
+	return exitOKCode
 }
 
 // writeFileAtomic replaces one file in a single rename, so a failed or

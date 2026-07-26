@@ -73,3 +73,27 @@ func TestRunVersion(t *testing.T) {
 		t.Errorf("Run(--version) = %d, want %d", got, exitOK)
 	}
 }
+
+// --out pointing at a file is one failure, so it must report one exit code.
+// Reaching it through --merge used to surface a different error from a different
+// code path and land on "usage error" instead of "write failure".
+func TestOutIsFileExitsWriteFailureWithAndWithoutMerge(t *testing.T) {
+	dir := t.TempDir()
+	notADir := filepath.Join(dir, "out")
+	if err := os.WriteFile(notADir, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	in := filepath.Join(dir, "in")
+	if err := os.MkdirAll(in, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, args := range [][]string{
+		{in, "--out", notADir},
+		{in, "--out", notADir, "--merge"},
+	} {
+		if got := Run(args); got != exitWrite {
+			t.Errorf("Run(%v) = %d, want %d (write failure)", args, got, exitWrite)
+		}
+	}
+}

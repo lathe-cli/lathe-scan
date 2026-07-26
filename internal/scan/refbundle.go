@@ -16,6 +16,7 @@ import (
 
 type bundler struct {
 	root      string // scan root; external refs must stay under it
+	primary   string // abs path of the root document; its "#/" refs are already internal
 	section   []string
 	hoisted   map[string]any
 	assigned  map[string]string
@@ -40,6 +41,8 @@ func bundleSpec(primaryAbs, format, scanRoot string) (out []byte, files []string
 		b.section = []string{"components", "schemas"}
 	}
 
+	b.primary = primaryAbs
+
 	doc, err := b.load(primaryAbs)
 	if err != nil {
 		return nil, nil, nil, err
@@ -53,7 +56,7 @@ func bundleSpec(primaryAbs, format, scanRoot string) (out []byte, files []string
 		}
 	}
 
-	b.walk(doc, filepath.Dir(primaryAbs))
+	b.walk(doc, primaryAbs)
 
 	if len(b.hoisted) > 0 {
 		sec := ensureSection(doc, b.section)
@@ -69,28 +72,55 @@ func bundleSpec(primaryAbs, format, scanRoot string) (out []byte, files []string
 	return data, sortedKeysBool(b.files), b.missing, nil
 }
 
-func (b *bundler) walk(node any, baseDir string) {
+// walk rewrites every $ref reachable from a node that came from srcFile.
+//
+// srcFile (not just its directory) is what makes hoisting correct: a "#/..."
+// ref inside a hoisted fragment is document-relative to the file it came from,
+// so once that fragment moves into the root document the ref has to be
+// re-resolved against its original file. Treating it as already-internal
+// silently re-points it at whatever the root document happens to call the same
+// name — the caller's schema then means something else entirely.
+//
+// Map keys are visited in sorted order: hoisted names are assigned first-come,
+// so an unordered walk would hand the unsuffixed name to a different schema
+// from run to run and break byte-identical output.
+func (b *bundler) walk(node any, srcFile string) {
 	switch t := node.(type) {
 	case map[string]any:
 		if ref, ok := t["$ref"].(string); ok && ref != "" {
-			if strings.HasPrefix(ref, "#") {
-				return
-			}
-			if name, ok := b.resolveExternal(ref, baseDir); ok {
+			if name, ok := b.resolveRef(ref, srcFile); ok {
 				t["$ref"] = "#/" + strings.Join(b.section, "/") + "/" + name
-			} else {
+			} else if !b.isRootInternal(ref, srcFile) {
 				b.missing = append(b.missing, ref)
 			}
 			return
 		}
-		for _, v := range t {
-			b.walk(v, baseDir)
+		for _, k := range sortedKeysAny(t) {
+			b.walk(t[k], srcFile)
 		}
 	case []any:
 		for _, v := range t {
-			b.walk(v, baseDir)
+			b.walk(v, srcFile)
 		}
 	}
+}
+
+// isRootInternal reports whether a ref needs no rewriting at all: an in-document
+// ref that already lives in the primary document.
+func (b *bundler) isRootInternal(ref, srcFile string) bool {
+	return strings.HasPrefix(ref, "#") && srcFile == b.primary
+}
+
+// resolveRef hoists both external refs and the in-document refs of an already
+// hoisted fragment. Returns the assigned schema name in the root namespace.
+func (b *bundler) resolveRef(ref, srcFile string) (string, bool) {
+	if strings.HasPrefix(ref, "#") {
+		if srcFile == b.primary {
+			return "", false // already in the root namespace
+		}
+		return b.resolveExternal(filepath.Base(srcFile)+ref, filepath.Dir(srcFile))
+	}
+	return b.resolveExternal(ref, filepath.Dir(srcFile))
 }
 
 func (b *bundler) resolveExternal(ref, baseDir string) (string, bool) {
@@ -106,8 +136,12 @@ func (b *bundler) resolveExternal(ref, baseDir string) (string, bool) {
 	if !b.isSchemaFragment(frag) {
 		return "", false
 	}
-	absFile := filepath.Clean(filepath.Join(baseDir, filepath.FromSlash(filePart)))
-	if !pathUnderRoot(b.root, absFile) {
+	// Physical resolution, not lexical: a symlink inside the input can point at
+	// an arbitrary file on the machine, and Clean/Join would still call it "under
+	// the root". An unresolvable or escaping target is left missing, which the
+	// caller turns into a blocking gap.
+	absFile, ok := resolveWithin(b.root, filepath.Join(baseDir, filepath.FromSlash(filePart)))
+	if !ok {
 		return "", false
 	}
 	key := absFile + "#" + frag
@@ -127,7 +161,7 @@ func (b *bundler) resolveExternal(ref, baseDir string) (string, bool) {
 	}
 	name := b.uniqueName(fragName(frag, filePart))
 	b.assigned[key] = name // before recursing so cycles terminate
-	b.walk(target, filepath.Dir(absFile))
+	b.walk(target, absFile)
 	b.hoisted[name] = target
 	return name, true
 }
@@ -226,6 +260,15 @@ func sanitizeSchemaName(s string) string {
 }
 
 func sortedKeysBool(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sortedKeysAny(m map[string]any) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)

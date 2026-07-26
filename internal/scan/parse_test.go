@@ -1,6 +1,10 @@
 package scan
 
-import "testing"
+import (
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 const specOpenAPI = `openapi: 3.0.3
 info:
@@ -179,5 +183,69 @@ func TestContentHashStable(t *testing.T) {
 	b, _ := parseSpec([]byte(specOpenAPI))
 	if a.contentHash != b.contentHash || a.contentHash == "" {
 		t.Errorf("content hash not stable: %q vs %q", a.contentHash, b.contentHash)
+	}
+}
+
+// default_hostname is only extracted when the servers agree. Taking servers[0]
+// would let list order decide where authenticated commands are sent, and the
+// first entry is conventionally production.
+func TestHostnameOnlyWhenUnambiguous(t *testing.T) {
+	cases := []struct {
+		name, servers, wantHost string
+		wantCandidates          int
+	}{
+		{"single", "  - url: https://api.acme.com/v1\n", "api.acme.com", 0},
+		// Several URLs, one host: still unambiguous.
+		{"same host", "  - url: https://api.acme.com/v1\n  - url: https://api.acme.com/v2\n", "api.acme.com", 0},
+		{"different hosts", "  - url: https://prod.acme.com/v1\n  - url: https://sandbox.acme.com/v1\n", "", 2},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			spec := "openapi: 3.0.3\ninfo: { title: T, version: \"1\" }\nservers:\n" + c.servers +
+				"paths:\n  /x:\n    get:\n      responses:\n        \"200\": { description: ok }\n"
+			p, err := parseSpec([]byte(spec))
+			if err != nil || p == nil {
+				t.Fatalf("parseSpec: %v", err)
+			}
+			if p.hostname != c.wantHost {
+				t.Errorf("hostname = %q, want %q", p.hostname, c.wantHost)
+			}
+			if len(p.hostCandidates) != c.wantCandidates {
+				t.Errorf("hostCandidates = %v, want %d", p.hostCandidates, c.wantCandidates)
+			}
+		})
+	}
+}
+
+// Leaving the field empty is only half the job: the user needs to know there was
+// a choice, and what the options were.
+func TestAmbiguousHostGapNamesCandidates(t *testing.T) {
+	in := inputDir(t, "openapi.yaml", `openapi: 3.0.3
+info: { title: Host Probe, version: "1" }
+servers:
+  - url: https://prod.acme.com/v1
+  - url: https://sandbox.acme.com/v1
+paths:
+  /health:
+    get:
+      responses:
+        "200": { description: ok }
+`)
+	out := t.TempDir()
+	if err := Execute(Options{Inputs: []string{in}, Out: out}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if s := firstSource(t, filepath.Join(out, sourcesFileName)); s["default_hostname"] != nil {
+		t.Errorf("ambiguous servers must not yield a default_hostname: %v", s["default_hostname"])
+	}
+	rep := readReport(t, out).Sources[0]
+	var msg string
+	for _, g := range rep.Gaps {
+		if g.Kind == gapAmbiguousHost {
+			msg = g.Message
+		}
+	}
+	if !strings.Contains(msg, "prod.acme.com") || !strings.Contains(msg, "sandbox.acme.com") {
+		t.Errorf("gap should name the candidate hostnames, got %q", msg)
 	}
 }

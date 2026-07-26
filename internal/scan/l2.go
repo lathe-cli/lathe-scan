@@ -94,7 +94,7 @@ type sourceFile struct {
 func runL2(idx *fileIndex, input, scanRoot string) (*builtSource, *Candidate) {
 	files := make([]sourceFile, 0, len(idx.sources))
 	for _, f := range idx.sources {
-		data, err := readCapped(f)
+		data, err := readWithin(scanRoot, f)
 		if err != nil {
 			continue
 		}

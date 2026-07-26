@@ -41,8 +41,12 @@ func extractZip(zipPath string) (dir string, cleanup func(), err error) {
 
 	var total int64
 	for _, f := range r.File {
+		// Refused, not skipped: extracting the harmless remainder of a hostile
+		// archive would report a successful scan of a subset nobody asked about,
+		// with nothing on the record to say entries were dropped.
 		if !filepath.IsLocal(f.Name) {
-			continue
+			cleanup()
+			return "", nil, fmt.Errorf("zip %s: entry %q escapes the archive root", zipPath, f.Name)
 		}
 		info := f.FileInfo()
 		target := filepath.Join(dir, filepath.FromSlash(f.Name))
@@ -50,9 +54,13 @@ func extractZip(zipPath string) (dir string, cleanup func(), err error) {
 			_ = os.MkdirAll(target, 0o755)
 			continue
 		}
-		// Never materialize symlinks or special files.
-		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-			continue
+		if info.Mode()&os.ModeSymlink != 0 {
+			cleanup()
+			return "", nil, fmt.Errorf("zip %s: entry %q is a symlink", zipPath, f.Name)
+		}
+		if !info.Mode().IsRegular() {
+			cleanup()
+			return "", nil, fmt.Errorf("zip %s: entry %q is not a regular file", zipPath, f.Name)
 		}
 		if int64(f.UncompressedSize64) > maxZipPerFile {
 			cleanup()
