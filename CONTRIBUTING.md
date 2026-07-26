@@ -1,47 +1,39 @@
 # Contributing to lathe-scan
 
-Thanks for your interest in improving `lathe-scan`.
-
-## Scope
-
-`lathe-scan` discovers API specs and emits a draft Lathe `sources.yaml`. It is
-deliberately narrow:
-
-- It is **offline and read-only**. It must never make network calls, upload
-  source, or modify a scanned input.
-- It **never executes scanned code**. Framework extractors (L2) are static
-  analysis only — no starting apps, importing modules, running builds, or
-  installing dependencies.
-- It **does not generate CLIs**. Code generation belongs to Lathe; `lathe-scan`
-  produces inputs Lathe consumes.
-- Emitted `sources.yaml` must load in Lathe's `sourceconfig` validator. Prefer
-  reproducible `repo_url` + `pinned_tag` origins; fall back to `local_path`;
-  never fabricate an origin.
-
-Changes that move weight into runtime behavior, non-spec-driven output, or
-online services are out of scope. See [docs/DESIGN.md](docs/DESIGN.md).
+Read [docs/DESIGN.md](docs/DESIGN.md) before changing behavior; it defines the
+non-negotiable product and safety boundaries.
 
 ## Development
 
+Go 1.25 or newer and `golangci-lint` are required.
+
 ```sh
-make check   # fmt-check, vet, lint, test — run before every PR
+make build   # build ./bin/lathe-scan
+make test    # run go test ./...
+make fmt     # format Go sources
+make check   # format check, vet, lint, and tests
 ```
 
-Requires Go 1.25+.
+Run `make check` before opening a pull request. Use `make tidy` only when module
+dependencies change.
 
-- Format with `gofmt` (`make fmt`).
-- Wrap errors with context: `fmt.Errorf("...: %w", err)`.
-- Add package-local `*_test.go` and `testdata/` fixtures for parse, selection,
-  and emit behavior.
-- Keep discovery deterministic — identical inputs must produce identical output.
+## Code and Tests
 
-## Commits & PRs
+Follow standard Go naming and let `gofmt` handle formatting. Wrap errors with
+context using `fmt.Errorf("...: %w", err)`. Keep discovery and output
+deterministic.
 
-- Use [Conventional Commits](https://www.conventionalcommits.org/).
-- Sign off every commit: `git commit -s`.
-- Keep PRs focused and include the exact verification commands you ran.
+Place tests beside the package they exercise as `*_test.go`; use package-local
+`testdata/` for representative files. Add focused coverage for changed parsing,
+selection, merge, security, or output behavior. The project has no numeric
+coverage threshold.
 
-## License
+## Commits and Pull Requests
 
-By contributing, you agree that your contributions are licensed under the
-[MIT License](LICENSE).
+Use scoped Conventional Commits, for example
+`fix(scan): preserve source provenance`. Sign every commit with
+`git commit -s`.
+
+Keep pull requests focused. Explain the behavior and motivation, link relevant
+issues, and list exact verification commands. Include sample terminal output
+when reports, manifests, flags, or exit behavior change.
