@@ -315,7 +315,7 @@ func parseCandidates(files []string, root string) ([]Candidate, map[string]*pars
 	var cands []Candidate
 	parsedByPath := map[string]*parsed{}
 	for _, f := range files {
-		rel := relOrBase(root, f)
+		rel := repoRelativePath(root, f)
 		data, err := readWithin(root, f)
 		if err != nil {
 			// A candidate that resolves outside the tree is refused, not skipped:
@@ -379,11 +379,20 @@ func nameStrongMatch(path string) bool {
 	return strings.HasPrefix(base, "openapi") || strings.HasPrefix(base, "swagger")
 }
 
-func relOrBase(root, path string) string {
-	if rel, err := filepath.Rel(root, path); err == nil && !strings.HasPrefix(rel, "..") {
-		return filepath.ToSlash(rel)
+func repoRelativePath(root, path string) string {
+	physicalPath, ok := resolveWithin(root, path)
+	if !ok {
+		return ""
 	}
-	return filepath.Base(path)
+	physicalRoot, err := physicalRoot(root)
+	if err != nil {
+		return ""
+	}
+	rel, err := filepath.Rel(physicalRoot, physicalPath)
+	if err != nil {
+		return ""
+	}
+	return filepath.ToSlash(rel)
 }
 
 func score(p *parsed) int {

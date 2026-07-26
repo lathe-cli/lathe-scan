@@ -41,6 +41,26 @@ func readSources(t *testing.T, path string) map[string]map[string]any {
 	return f.Sources
 }
 
+func TestNormalizeInputsCollapsesFilesystemAliases(t *testing.T) {
+	root := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "repo")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	inputs, keys := normalizeInputs([]string{alias, root})
+	if len(inputs) != 1 || len(keys) != 1 {
+		t.Fatalf("normalizeInputs returned %d inputs and %d keys, want one of each", len(inputs), len(keys))
+	}
+	physical, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inputs[0].key != physical {
+		t.Fatalf("normalized key = %q, want %q", inputs[0].key, physical)
+	}
+}
+
 func inputDir(t *testing.T, rel, spec string) string {
 	t.Helper()
 	d := t.TempDir()

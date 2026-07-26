@@ -61,7 +61,7 @@ func buildPostmanSources(files []string, root string) ([]*builtSource, []Candida
 		if err != nil {
 			continue
 		}
-		rel := relOrBase(root, f)
+		rel := repoRelativePath(root, f)
 		var col pmCollection
 		if err := json.Unmarshal(data, &col); err != nil {
 			cands = append(cands, Candidate{Path: rel, Format: "postman", Parsed: false, Error: err.Error()})
