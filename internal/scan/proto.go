@@ -36,7 +36,7 @@ func buildProtoSource(files []string, root string, git *gitOrigin) (*builtSource
 		if err != nil {
 			continue
 		}
-		info := analyzeProto(relOrBase(root, f), data)
+		info := analyzeProto(repoRelativePath(root, f), data)
 		infos = append(infos, info)
 		dirs = append(dirs, filepath.Dir(f))
 		methods += info.methods
@@ -51,7 +51,7 @@ func buildProtoSource(files []string, root string, git *gitOrigin) (*builtSource
 	// Prefer a root under which local imports resolve; else common ancestor.
 	protoDir := resolveProtoRoot(files, imports, commonDir(dirs))
 	cand := &Candidate{
-		Path: relOrBase(root, protoDir), Format: "proto", Parsed: true,
+		Path: repoRelativePath(root, protoDir), Format: "proto", Parsed: true,
 		Metrics: &Metrics{Operations: methods},
 		Reason:  fmt.Sprintf("proto, %d services, %d rpc, %d google.api.http", services, methods, httpMethods),
 	}

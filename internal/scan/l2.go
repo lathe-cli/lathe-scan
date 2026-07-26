@@ -99,7 +99,7 @@ func runL2(idx *fileIndex, input, scanRoot string) (*builtSource, *Candidate) {
 			continue
 		}
 		files = append(files, sourceFile{
-			rel:  relOrBase(scanRoot, f),
+			rel:  repoRelativePath(scanRoot, f),
 			ext:  strings.ToLower(filepath.Ext(f)),
 			body: string(data),
 		})

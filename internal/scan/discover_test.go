@@ -50,6 +50,28 @@ func TestDiscoverSkipsIgnoredDirs(t *testing.T) {
 	}
 }
 
+func TestRepoRelativePathCanonicalizesEquivalentPaths(t *testing.T) {
+	root := t.TempDir()
+	spec := writeFile(t, root, "api/openapi.yaml", specOpenAPI)
+	alias := filepath.Join(t.TempDir(), "repo")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	if got := repoRelativePath(alias, spec); got != "api/openapi.yaml" {
+		t.Fatalf("repoRelativePath(alias, spec) = %q, want api/openapi.yaml", got)
+	}
+}
+
+func TestRepoRelativePathRefusesPathsOutsideRoot(t *testing.T) {
+	root := t.TempDir()
+	outside := writeFile(t, t.TempDir(), "openapi.yaml", specOpenAPI)
+
+	if got := repoRelativePath(root, outside); got != "" {
+		t.Fatalf("repoRelativePath(root, outside) = %q, want empty", got)
+	}
+}
+
 func TestDiscoverSkipsTestAndSampleDirs(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "openapi.yaml", specOpenAPI) // the real one

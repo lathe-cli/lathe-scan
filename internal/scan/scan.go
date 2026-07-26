@@ -61,7 +61,7 @@ func Execute(opts Options) error {
 	var built []*builtSource
 	postmanCandidates := 0
 	for _, in := range inputs {
-		scanPath, kindHint := in.path, ""
+		scanPath, kindHint := in.key, ""
 		if isZipInput(in.path) {
 			dir, cleanup, err := extractZip(in.path)
 			if err != nil {
@@ -117,7 +117,7 @@ func Execute(opts Options) error {
 
 type inputSpec struct {
 	path string // as the user spelled it
-	key  string // absolute, for identity across runs
+	key  string // physical absolute path, for identity and scanning
 }
 
 // normalizeInputs sorts for determinism and collapses inputs that resolve to the
@@ -132,6 +132,8 @@ func normalizeInputs(raw []string) ([]inputSpec, map[string]bool) {
 		key, err := filepath.Abs(in)
 		if err != nil {
 			key = in
+		} else if physical, err := filepath.EvalSymlinks(key); err == nil {
+			key = physical
 		}
 		if keys[key] {
 			continue

@@ -18,7 +18,7 @@ func buildGraphQLSource(files []string, root string, git *gitOrigin) (*builtSour
 		if err != nil {
 			continue
 		}
-		sources = append(sources, &ast.Source{Name: relOrBase(root, f), Input: string(data)})
+		sources = append(sources, &ast.Source{Name: repoRelativePath(root, f), Input: string(data)})
 	}
 	if len(sources) == 0 {
 		return nil, nil
@@ -115,7 +115,7 @@ func fieldNames(def *ast.Definition) []string {
 func pickPrimaryGraphQL(files []string, root string) string {
 	var withQuery, first string
 	for _, f := range files {
-		rel := relOrBase(root, f)
+		rel := repoRelativePath(root, f)
 		if first == "" {
 			first = rel
 		}
