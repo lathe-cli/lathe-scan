@@ -30,8 +30,9 @@ func Run(args []string) int {
 		Use:   "lathe-scan <input>... --out <dir>",
 		Short: "Discover API specs across repos and emit a draft Lathe sources.yaml",
 		Long: "lathe-scan reads one or more repo directories or zip archives (offline, " +
-			"read-only) and aggregates every discoverable API into a single draft Lathe " +
-			"sources.yaml, plus report.json and GAPS.md for human confirmation.",
+			"read-only), recommends one candidate per logical API, and aggregates those " +
+			"recommendations into a draft Lathe sources.yaml, plus report.json and GAPS.md " +
+			"for human confirmation.",
 		// tool_version in report.json is the audit anchor; the binary must be able
 		// to state which version produced a given report.
 		Version:       scan.Version(),
@@ -46,7 +47,7 @@ func Run(args []string) int {
 
 	f := cmd.Flags()
 	f.StringVar(&opts.Out, "out", "", "output directory for sources.yaml, report.json, GAPS.md (required)")
-	f.StringVar(&opts.Name, "name", "", "source name; only valid for a single source result")
+	f.StringVar(&opts.Name, "name", "", "source name; only valid when exactly one source is recommended")
 	f.StringVar(&opts.Prefer, "prefer", "", "preferred backend on ties: openapi3|swagger|proto|graphql")
 	f.BoolVar(&opts.Merge, "merge", false, "fold results into an existing --out/sources.yaml, preserving foreign sources")
 	f.BoolVar(&opts.Force, "force", false, "allow overwriting a non-empty --out")

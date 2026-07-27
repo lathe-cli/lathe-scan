@@ -55,7 +55,7 @@ func Execute(opts Options) error {
 
 	// Non-nil so report.json carries [] rather than null: an empty list is a
 	// cleaner contract for anything consuming this file.
-	report := &Report{SchemaVersion: 1, ToolVersion: version, Gaps: []Gap{}}
+	report := &Report{SchemaVersion: 3, ToolVersion: version, Gaps: []Gap{}}
 	inputs, inputKeys := normalizeInputs(opts.Inputs)
 
 	var built []*builtSource
@@ -85,10 +85,16 @@ func Execute(opts Options) error {
 	}
 
 	if opts.Name != "" {
-		if len(built) != 1 {
-			return fmt.Errorf("--name is only valid when exactly one source is produced (got %d)", len(built))
+		var recommended []*builtSource
+		for _, b := range built {
+			if b.report.Recommended {
+				recommended = append(recommended, b)
+			}
 		}
-		built[0].baseName = opts.Name
+		if len(recommended) != 1 {
+			return fmt.Errorf("--name is only valid when exactly one source is recommended (got %d)", len(recommended))
+		}
+		recommended[0].baseName = opts.Name
 	}
 
 	sort.Slice(built, func(i, j int) bool {

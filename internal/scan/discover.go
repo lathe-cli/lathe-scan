@@ -199,11 +199,13 @@ func scanInput(input, inputKey, scanPath, kindHint string, opts Options) (*input
 		}
 	}
 
+	groups := map[string][]*builtSource{}
 	for _, b := range ir.sources {
 		b.inputKey = inputKey
+		groups[b.groupKey()] = append(groups[b.groupKey()], b)
 	}
-	if best := recommend(ir.sources, opts.Prefer); best != nil {
-		best.report.Recommended = true
+	for _, group := range groups {
+		recommend(group, opts.Prefer).report.Recommended = true
 	}
 	return ir, nil
 }
@@ -249,37 +251,24 @@ func readCapped(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-// recommend picks one source per input. --prefer breaks ties on backend ahead of
-// the built-in priority, but never overrides a source that would emit more
+// recommend picks one source from a logical-source group. --prefer breaks ties
+// on backend ahead of the built-in priority, but never overrides a source that would emit more
 // commands: a preferred backend that generates less is still the worse choice.
 func recommend(sources []*builtSource, prefer string) *builtSource {
 	prio := map[string]int{"openapi3": 4, "swagger": 3, "graphql": 2, "proto": 1}
-	rank := func(b *builtSource) (int, int) {
-		preferred := 0
-		if prefer != "" && b.yc.Backend == prefer {
-			preferred = 1
-		}
-		return preferred, prio[b.yc.Backend]
-	}
-	var best *builtSource
-	for _, b := range sources {
-		if best == nil {
-			best = b
-			continue
-		}
-		bPref, bPrio := rank(b)
-		cPref, cPrio := rank(best)
+	best := sources[0]
+	for _, b := range sources[1:] {
 		switch {
 		case b.report.WouldEmitCommands != best.report.WouldEmitCommands:
 			if b.report.WouldEmitCommands > best.report.WouldEmitCommands {
 				best = b
 			}
-		case bPref != cPref:
-			if bPref > cPref {
+		case prefer != "" && (b.yc.Backend == prefer) != (best.yc.Backend == prefer):
+			if b.yc.Backend == prefer {
 				best = b
 			}
-		case bPrio != cPrio:
-			if bPrio > cPrio {
+		case prio[b.yc.Backend] != prio[best.yc.Backend]:
+			if prio[b.yc.Backend] > prio[best.yc.Backend] {
 				best = b
 			}
 		case b.baseName < best.baseName:

@@ -51,7 +51,7 @@ lathe-scan <input>... --out <dir> [--name <source>] [--prefer <backend>] [--merg
 ```
 
 - `--out` selects the output directory and is required.
-- `--name` overrides the name when exactly one source is produced.
+- `--name` overrides the name when exactly one source is recommended.
 - `--prefer openapi3|swagger|proto|graphql` breaks otherwise equal backend
   choices; it never outranks a source that would generate more commands.
 - `--merge` updates sources owned by the scanned inputs while preserving foreign
@@ -74,9 +74,10 @@ nothing usable is found, and `3` for write failures.
   <source>/...   # copied material for local_path sources
 ```
 
-Only sources expected to generate at least one Lathe command are emitted.
-`report.json` and `GAPS.md` are still written for an empty result. Identical
-inputs produce deterministic manifests and reports.
+Only the recommended candidate for each logical source is emitted. Historical
+or alternate candidates for that source remain in `report.json` and `GAPS.md`;
+independent APIs are emitted separately. Both audit files are still written for
+an empty result. Identical inputs produce deterministic manifests and reports.
 
 `--merge` never widens a hand-trimmed GraphQL exposure policy. It also never
 deletes copied directories from earlier runs; only `sources.yaml` may be

@@ -85,11 +85,15 @@ func buildPostmanSources(files []string, root string) ([]*builtSource, []Candida
 		name := firstNonEmpty(sanitizeName(col.Info.Name), sanitizeName(parentDirName(rel)), "postman")
 		draft := synthesizeOpenAPI(name, "postman", routes)
 		b := &builtSource{
-			baseName: name,
-			identity: rel,
-			origin:   &Origin{Type: "local_path"},
-			yc:       &ycSource{Backend: "openapi3", OpenAPI3: &filesBlock{Files: []string{l2DraftName}}},
-			synth:    []synthFile{{relTo: l2DraftName, content: draft}},
+			baseName:  name,
+			identity:  rel,
+			origin:    &Origin{Type: "local_path"},
+			yc:        &ycSource{Backend: "openapi3", OpenAPI3: &filesBlock{Files: []string{l2DraftName}}},
+			synth:     []synthFile{{relTo: l2DraftName, content: draft}},
+			inputRoot: root,
+			inputFiles: []string{
+				rel,
+			},
 			report: &SourceReport{
 				Level: "L1", Extractor: "postman", Backend: "openapi3",
 				WouldEmitCommands: len(routes),

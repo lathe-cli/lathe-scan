@@ -922,7 +922,7 @@ func TestExecuteMergeEmptyExposeIsNotUsable(t *testing.T) {
 		t.Fatalf("an empty expose cannot yield a usable source; want ErrNoSources, got %v", err)
 	}
 	rep := readReport(t, out)
-	if len(rep.Sources) != 0 || rep.Summary.Usable != 0 || rep.Summary.ExitCode != 2 {
+	if len(rep.Sources) != 1 || rep.Summary.Usable != 0 || rep.Summary.ExitCode != 2 {
 		t.Errorf("empty expose still counted as usable: sources=%d usable=%d exit=%d",
 			len(rep.Sources), rep.Summary.Usable, rep.Summary.ExitCode)
 	}
@@ -1037,15 +1037,25 @@ func TestExecuteRejectsUnknownPrefer(t *testing.T) {
 
 func TestExecutePreferPicksRecommended(t *testing.T) {
 	recommendedBackend := func(prefer string) string {
-		in := t.TempDir()
-		writeFile(t, in, "api/openapi.yaml", specOneOp)
-		writeFile(t, in, "schema.graphql", sdlOneQuery)
+		in := inputDir(t, "openapi.yaml", specOneOp)
+		writeFile(t, in, "tie.graphql", sdlOneQuery)
 		out := t.TempDir()
 		if err := Execute(Options{Inputs: []string{in}, Out: out, Prefer: prefer}); err != nil {
 			t.Fatal(err)
 		}
-		for _, s := range readReport(t, out).Sources {
+		rep := readReport(t, out)
+		if len(rep.Sources) != 2 {
+			t.Fatalf("report sources = %d, want both candidates", len(rep.Sources))
+		}
+		srcs := readSources(t, filepath.Join(out, sourcesFileName))
+		if len(srcs) != 1 {
+			t.Fatalf("manifest sources = %d, want only the recommendation", len(srcs))
+		}
+		for _, s := range rep.Sources {
 			if s.Recommended {
+				if _, ok := srcs[s.Name]; !ok {
+					t.Fatalf("recommended source %q missing from manifest", s.Name)
+				}
 				return s.Backend
 			}
 		}
@@ -1056,6 +1066,312 @@ func TestExecutePreferPicksRecommended(t *testing.T) {
 	}
 	if got := recommendedBackend("graphql"); got != "graphql" {
 		t.Errorf("--prefer graphql recommendation = %q, want graphql", got)
+	}
+}
+
+func TestExecuteRecommendsEachLogicalSource(t *testing.T) {
+	in := t.TempDir()
+	qdrant := strings.Replace(specOneOp, "title: Tie", "title: Qdrant API", 1)
+	master := strings.Replace(qdrant, "paths:\n", `paths:
+  /b:
+    get:
+      operationId: b
+      responses:
+        "200": { description: ok }
+`, 1)
+	writeFile(t, in, "docs/redoc/v1/openapi.yaml", qdrant)
+	writeFile(t, in, "docs/redoc/master/openapi.yaml", master)
+	writeFile(t, in, "services/billing/openapi.yaml",
+		strings.Replace(
+			strings.Replace(specOneOp, "title: Tie", "title: Billing API", 1),
+			"/a:", "/billing:", 1))
+
+	out := t.TempDir()
+	if err := Execute(Options{Inputs: []string{in}, Out: out}); err != nil {
+		t.Fatal(err)
+	}
+	srcs := readSources(t, filepath.Join(out, sourcesFileName))
+	rep := readReport(t, out)
+	if len(srcs) != 2 {
+		t.Fatalf("manifest sources = %d, want Qdrant and Billing recommendations; report: %+v", len(srcs), rep.Sources)
+	}
+	if len(rep.Sources) != 3 {
+		t.Fatalf("report sources = %d, want all candidates", len(rep.Sources))
+	}
+	recommended := 0
+	for _, s := range rep.Sources {
+		if !s.Recommended {
+			continue
+		}
+		recommended++
+		if _, ok := srcs[s.Name]; !ok {
+			t.Errorf("recommended source %q missing from manifest", s.Name)
+		}
+		if s.Provenance != nil && strings.HasPrefix(s.Provenance.Key, "docs/redoc/") &&
+			s.Provenance.Key != "docs/redoc/master/openapi.yaml" {
+			t.Errorf("historical Qdrant source was recommended: %s", s.Provenance.Key)
+		}
+	}
+	if recommended != 2 {
+		t.Errorf("recommended sources = %d, want one per logical source", recommended)
+	}
+}
+
+func TestExecuteKeepsIndependentAPIsWithSameTitle(t *testing.T) {
+	in := t.TempDir()
+	orders := strings.Replace(specOneOp, "title: Tie", "title: API", 1)
+	orders = strings.Replace(orders, "/a:", "/orders:", 1)
+	admin := strings.Replace(specOneOp, "title: Tie", "title: API", 1)
+	admin = strings.Replace(admin, "/a:", "/admin:", 1)
+	writeFile(t, in, "services/orders/openapi.yaml", orders)
+	writeFile(t, in, "services/admin/openapi.yaml", admin)
+
+	out := t.TempDir()
+	if err := Execute(Options{Inputs: []string{in}, Out: out}); err != nil {
+		t.Fatal(err)
+	}
+	sources := readSources(t, filepath.Join(out, sourcesFileName))
+	if len(sources) != 2 {
+		t.Fatalf("same-titled independent APIs collapsed into %d manifest source(s): %v", len(sources), sources)
+	}
+	recommended := 0
+	for _, source := range readReport(t, out).Sources {
+		if source.Recommended {
+			recommended++
+		}
+	}
+	if recommended != 2 {
+		t.Errorf("recommended candidates = %d, want both independent APIs", recommended)
+	}
+}
+
+func TestExecuteMergePreservesGraphQLExposeAcrossRecommendationChanges(t *testing.T) {
+	in := t.TempDir()
+	writeFile(t, in, "api.graphql", "type Query { alpha: String beta: String }\n")
+	writeFile(t, in, "openapi.yaml", strings.Replace(specOneOp, "title: Tie", "title: API", 1))
+	out := t.TempDir()
+	if err := Execute(Options{Inputs: []string{in}, Out: out, Merge: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(out, sourcesFileName)
+	sources := readSources(t, path)
+	for _, source := range sources {
+		if source["backend"] != "graphql" {
+			continue
+		}
+		graphql, _ := source["graphql"].(map[string]any)
+		graphql["expose"] = map[string]any{"queries": []any{"alpha"}}
+	}
+	data, err := yaml.Marshal(map[string]any{"sources": sources})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	openapiWins := strings.Replace(specOneOp, "title: Tie", "title: API", 1)
+	openapiWins = strings.Replace(openapiWins, "paths:\n", `paths:
+  /b:
+    get:
+      operationId: b
+      responses:
+        "200": { description: ok }
+  /c:
+    get:
+      operationId: c
+      responses:
+        "200": { description: ok }
+`, 1)
+	writeFile(t, in, "openapi.yaml", openapiWins)
+	if err := Execute(Options{Inputs: []string{in}, Out: out, Merge: true}); err != nil {
+		t.Fatal(err)
+	}
+	if source := firstSource(t, path); source["backend"] != "openapi3" {
+		t.Fatalf("middle recommendation backend = %v, want openapi3", source["backend"])
+	}
+
+	other := inputDir(t, "openapi.yaml", strings.Replace(specOneOp, "title: Tie", "title: Other", 1))
+	if err := Execute(Options{Inputs: []string{other}, Out: out, Merge: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, in, "api.graphql", "type Query { alpha: String beta: String gamma: String delta: String }\n")
+	if err := Execute(Options{Inputs: []string{in}, Out: out, Merge: true}); err != nil {
+		t.Fatal(err)
+	}
+	var source map[string]any
+	for _, candidate := range readSources(t, path) {
+		if candidate["backend"] == "graphql" {
+			source = candidate
+			break
+		}
+	}
+	if source == nil {
+		t.Fatal("final manifest has no GraphQL recommendation")
+	}
+	graphql, _ := source["graphql"].(map[string]any)
+	expose, _ := graphql["expose"].(map[string]any)
+	queries, _ := expose["queries"].([]any)
+	if len(queries) != 1 || queries[0] != "alpha" {
+		t.Fatalf("recommendation round trip widened graphql.expose: %v", expose)
+	}
+}
+
+func TestExecuteMergeRecommendationChangeKeepsLogicalName(t *testing.T) {
+	in := t.TempDir()
+	v1 := strings.Replace(specOneOp, "paths:\n", `paths:
+  /v1-extra:
+    get:
+      operationId: v1Extra
+      responses:
+        "200": { description: ok }
+`, 1)
+	writeFile(t, in, "v1/openapi.yaml", v1)
+	writeFile(t, in, "v2/openapi.yaml", specOneOp)
+	gitInit(t, in, []string{"add", "."}, []string{"commit", "-qm", "first"},
+		[]string{"remote", "add", "origin", "https://example.com/acme/api.git"})
+
+	out := t.TempDir()
+	if err := Execute(Options{Inputs: []string{in}, Out: out}); err != nil {
+		t.Fatal(err)
+	}
+	first := readSources(t, filepath.Join(out, sourcesFileName))
+	if len(first) != 1 {
+		t.Fatalf("first manifest sources = %v, want one", first)
+	}
+	var originalName string
+	for name := range first {
+		originalName = name
+	}
+
+	v2 := strings.Replace(v1, "paths:\n", `paths:
+  /v2-extra:
+    get:
+      operationId: v2Extra
+      responses:
+        "200": { description: ok }
+`, 1)
+	writeFile(t, in, "v2/openapi.yaml", v2)
+	gitInit(t, in, []string{"add", "."}, []string{"commit", "-qm", "second"})
+
+	if err := Execute(Options{Inputs: []string{in}, Out: out, Merge: true}); err != nil {
+		t.Fatal(err)
+	}
+	second := readSources(t, filepath.Join(out, sourcesFileName))
+	if len(second) != 1 || second[originalName] == nil {
+		t.Fatalf("recommendation change renamed logical source %q: %v", originalName, second)
+	}
+	for _, source := range readReport(t, out).Sources {
+		if source.Recommended && (source.Name != originalName || source.Provenance.Key != "v2/openapi.yaml") {
+			t.Errorf("new recommendation = name %q, key %q; want %q at v2/openapi.yaml",
+				source.Name, source.Provenance.Key, originalName)
+		}
+	}
+}
+
+func TestExecuteReportOnlySyntheticCandidateNamesInputEvidence(t *testing.T) {
+	in := t.TempDir()
+	openapi := strings.Replace(specOneOp, "title: Tie", "title: Acme API", 1)
+	openapi = strings.Replace(openapi, "paths:\n", `paths:
+  /b:
+    get:
+      operationId: b
+      responses:
+        "200": { description: ok }
+  /c:
+    get:
+      operationId: c
+      responses:
+        "200": { description: ok }
+`, 1)
+	writeFile(t, in, "api/openapi.yaml", openapi)
+	writeFile(t, in, "api/acme.postman_collection.json", postmanCollection)
+
+	out := t.TempDir()
+	if err := Execute(Options{Inputs: []string{in}, Out: out}); err != nil {
+		t.Fatal(err)
+	}
+	physical, err := filepath.EvalSymlinks(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range readReport(t, out).Sources {
+		if source.Extractor != "postman" {
+			continue
+		}
+		if source.Recommended {
+			t.Fatal("equal-yield Postman candidate unexpectedly outranked native OpenAPI")
+		}
+		if source.Origin == nil || source.Origin.LocalPath != physical {
+			t.Errorf("report-only origin = %+v, want input root %q", source.Origin, physical)
+		}
+		if len(source.Files) != 1 || source.Files[0] != "api/acme.postman_collection.json" {
+			t.Errorf("report-only files = %v, want original Postman evidence", source.Files)
+		}
+		return
+	}
+	t.Fatal("report has no Postman candidate")
+}
+
+func TestExecuteMergePreservesForeignEntryNamedLikeCandidate(t *testing.T) {
+	in := inputDir(t, "openapi.yaml", specOneOp)
+	writeFile(t, in, "tie.graphql", sdlOneQuery)
+	out := t.TempDir()
+	if err := Execute(Options{Inputs: []string{in}, Out: out}); err != nil {
+		t.Fatal(err)
+	}
+
+	var candidate string
+	for _, s := range readReport(t, out).Sources {
+		if !s.Recommended {
+			candidate = s.Name
+		}
+	}
+	if candidate == "" {
+		t.Fatal("test fixture produced no non-recommended candidate")
+	}
+	path := filepath.Join(out, sourcesFileName)
+	srcs := readSources(t, path)
+	srcs[candidate] = map[string]any{
+		"repo_url":   "https://example.com/foreign.git",
+		"pinned_tag": "v1.0.0",
+		"backend":    "openapi3",
+		"openapi3":   map[string]any{"files": []string{"foreign.yaml"}},
+	}
+	data, err := yaml.Marshal(map[string]any{"sources": srcs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Execute(Options{Inputs: []string{in}, Out: out, Merge: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := readSources(t, path)[candidate]; !ok {
+		t.Fatalf("foreign source %q was deleted because a report-only candidate reused its name", candidate)
+	}
+}
+
+func TestExecuteNameAppliesToRecommendedSource(t *testing.T) {
+	in := inputDir(t, "openapi.yaml", specOneOp)
+	writeFile(t, in, "tie.graphql", sdlOneQuery)
+	out := t.TempDir()
+	if err := Execute(Options{Inputs: []string{in}, Out: out, Name: "custom"}); err != nil {
+		t.Fatal(err)
+	}
+	if srcs := readSources(t, filepath.Join(out, sourcesFileName)); len(srcs) != 1 || srcs["custom"] == nil {
+		t.Fatalf("--name did not name the recommendation: %v", srcs)
+	}
+
+	if err := Execute(Options{Inputs: []string{in}, Out: out, Name: "renamed", Merge: true}); err != nil {
+		t.Fatal(err)
+	}
+	if srcs := readSources(t, filepath.Join(out, sourcesFileName)); len(srcs) != 1 || srcs["renamed"] == nil {
+		t.Fatalf("--merge --name did not rename the recommendation: %v", srcs)
 	}
 }
 

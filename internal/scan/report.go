@@ -9,13 +9,14 @@ var version = "0.1.0"
 func Version() string { return version }
 
 type Report struct {
-	SchemaVersion int            `json:"schema_version"`
-	ToolVersion   string         `json:"tool_version"`
-	Summary       Summary        `json:"summary"`
-	Inputs        []InputReport  `json:"inputs"`
-	Sources       []SourceReport `json:"sources"`
-	// Preserved lists entries --merge carried over rather than produced; together
-	// with Sources it accounts for every entry in sources.yaml.
+	SchemaVersion int               `json:"schema_version"`
+	ToolVersion   string            `json:"tool_version"`
+	Summary       Summary           `json:"summary"`
+	Inputs        []InputReport     `json:"inputs"`
+	Sources       []SourceReport    `json:"sources"`
+	Policies      []PreservedPolicy `json:"policies,omitempty"`
+	// Preserved lists manifest entries --merge carried over rather than produced.
+	// Sources keeps every usable candidate; only recommended candidates are emitted.
 	Preserved []PreservedSource `json:"preserved,omitempty"`
 	Gaps      []Gap             `json:"gaps"`
 }
@@ -97,6 +98,15 @@ type SourceReport struct {
 	Files             []string    `json:"files"`
 	Metrics           *Metrics    `json:"metrics,omitempty"`
 	Gaps              []Gap       `json:"gaps"`
+}
+
+// PreservedPolicy keeps safety-critical human policy by exact provenance while
+// a candidate is absent from sources.yaml or its input is not scanned. YAML
+// preserves empty or malformed expose nodes so a later recommendation fails
+// closed rather than widening.
+type PreservedPolicy struct {
+	Provenance        *Provenance `json:"provenance"`
+	GraphQLExposeYAML string      `json:"graphql_expose_yaml"`
 }
 
 type Gap struct {

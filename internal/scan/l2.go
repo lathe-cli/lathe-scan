@@ -138,13 +138,24 @@ func runL2(idx *fileIndex, input, scanRoot string) (*builtSource, *Candidate) {
 	// break --merge.
 	name := firstNonEmpty(sanitizeName(strings.TrimSuffix(filepath.Base(input), filepath.Ext(input))), "api")
 	draft := synthesizeOpenAPI(name, best.name, bestRoutes)
+	inputFileSet := map[string]bool{}
+	for _, route := range bestRoutes {
+		inputFileSet[route.file] = true
+	}
+	inputFiles := make([]string, 0, len(inputFileSet))
+	for file := range inputFileSet {
+		inputFiles = append(inputFiles, file)
+	}
+	sort.Strings(inputFiles)
 
 	b := &builtSource{
-		baseName: name,
-		identity: "l2",
-		origin:   &Origin{Type: "local_path"},
-		yc:       &ycSource{Backend: "openapi3", OpenAPI3: &filesBlock{Files: []string{l2DraftName}}},
-		synth:    []synthFile{{relTo: l2DraftName, content: draft}},
+		baseName:   name,
+		identity:   "l2",
+		origin:     &Origin{Type: "local_path"},
+		yc:         &ycSource{Backend: "openapi3", OpenAPI3: &filesBlock{Files: []string{l2DraftName}}},
+		synth:      []synthFile{{relTo: l2DraftName, content: draft}},
+		inputRoot:  scanRoot,
+		inputFiles: inputFiles,
 	}
 	b.report = &SourceReport{
 		Level: "L2", Extractor: best.name, Backend: "openapi3",

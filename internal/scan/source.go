@@ -2,7 +2,9 @@ package scan
 
 import (
 	"fmt"
+	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -19,10 +21,12 @@ type builtSource struct {
 	// moves the moment a file is added, and provKey already includes the backend.
 	identity string
 
-	origin *Origin
-	yc     *ycSource
-	copies []copyItem
-	synth  []synthFile
+	origin     *Origin
+	yc         *ycSource
+	copies     []copyItem
+	synth      []synthFile
+	inputFiles []string // original evidence paths, relative to inputRoot
+	inputRoot  string   // physical root inputFiles are relative to
 
 	report *SourceReport
 }
@@ -56,6 +60,32 @@ func (b *builtSource) sortKey() string {
 	return strings.Join([]string{b.baseName, b.yc.Backend, b.fromInput, first}, "\x00")
 }
 
+var logicalVersionDir = regexp.MustCompile(`(?i)^v?\d+(?:[._-]\d+)*(?:[._-]?(?:alpha|beta|rc)\d*)?$`)
+
+// groupKey requires candidates to share both a derived name and a location
+// lineage. A display name alone is not identity: unrelated monorepo APIs often
+// use generic titles such as "API". Recognized version directories collapse to
+// their parent so docs/v1 and docs/master can still compete as revisions.
+func (b *builtSource) groupKey() string {
+	location := "."
+	if len(b.inputFiles) > 0 {
+		location = path.Dir(filepath.ToSlash(b.inputFiles[0]))
+		for isLogicalVersionDir(path.Base(location)) {
+			location = path.Dir(location)
+		}
+	}
+	return b.baseName + "\x00" + location
+}
+
+func isLogicalVersionDir(name string) bool {
+	switch strings.ToLower(name) {
+	case "main", "master", "latest", "current", "stable", "next":
+		return true
+	default:
+		return logicalVersionDir.MatchString(name)
+	}
+}
+
 func buildSource(c *Candidate, p *parsed, root string, git *gitOrigin) *builtSource {
 	// Lathe keeps external file $refs raw, so multi-file specs must be bundled
 	// into one self-contained file. Bundled artifacts are synthesized and always
@@ -71,9 +101,13 @@ func buildSource(c *Candidate, p *parsed, root string, git *gitOrigin) *builtSou
 		repoName = git.repoName
 	}
 	b := &builtSource{
-		baseName: firstNonEmpty(sanitizeName(p.title), sanitizeName(repoName), sanitizeName(parentDirName(c.Path)), "source"),
-		identity: c.Path,
-		yc:       &ycSource{DefaultHostname: p.hostname, Backend: p.format},
+		baseName:  firstNonEmpty(sanitizeName(p.title), sanitizeName(repoName), sanitizeName(parentDirName(c.Path)), "source"),
+		identity:  c.Path,
+		yc:        &ycSource{DefaultHostname: p.hostname, Backend: p.format},
+		inputRoot: root,
+		inputFiles: []string{
+			c.Path,
+		},
 	}
 
 	block := &filesBlock{Files: []string{c.Path}}
@@ -163,12 +197,18 @@ func bundleSource(c *Candidate, p *parsed, root string) *builtSource {
 		draftName = "swagger.yaml"
 	}
 	block := &filesBlock{Files: []string{draftName}}
+	inputFiles := make([]string, 0, len(files))
+	for _, file := range files {
+		inputFiles = append(inputFiles, repoRelativePath(root, file))
+	}
 	b := &builtSource{
-		baseName: firstNonEmpty(sanitizeName(p.title), sanitizeName(parentDirName(c.Path)), "api"),
-		identity: c.Path,
-		origin:   &Origin{Type: "local_path"},
-		yc:       &ycSource{DefaultHostname: p.hostname, Backend: p.format},
-		synth:    []synthFile{{relTo: draftName, content: bundled}},
+		baseName:   firstNonEmpty(sanitizeName(p.title), sanitizeName(parentDirName(c.Path)), "api"),
+		identity:   c.Path,
+		origin:     &Origin{Type: "local_path"},
+		yc:         &ycSource{DefaultHostname: p.hostname, Backend: p.format},
+		synth:      []synthFile{{relTo: draftName, content: bundled}},
+		inputRoot:  root,
+		inputFiles: inputFiles,
 	}
 	if p.format == "swagger" {
 		b.yc.Swagger = block
