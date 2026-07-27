@@ -513,6 +513,7 @@ func TestExecuteProtoIdentitySurvivesNewPackage(t *testing.T) {
 			"message Req {}\nmessage Resp {}\n"
 	}
 	in := t.TempDir()
+	writeFile(t, in, "buf.lock", "version: v2\ndeps:\n  - name: buf.build/googleapis/googleapis\n    commit: 004180b77378443887d3b55cabc00384\n    digest: b5:e8f475fe3330f31f5fd86ac689093bcd274e19611a09db91f41d637cb9197881ce89882b94d13a58738e53c91c6e4bae7dc1feba85f590164c975a89e25115dc\n")
 	writeFile(t, in, "api/v1/foo.proto", proto("v1", "/v1/foo"))
 	out := t.TempDir()
 	if err := Execute(Options{Inputs: []string{in}, Out: out, Merge: true}); err != nil {

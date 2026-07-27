@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -27,6 +28,7 @@ type protoFileInfo struct {
 // No protoc. Lathe only generates for RPCs with google.api.http, so would_emit
 // counts those. Compilation is unverified offline → usable sources cap at medium.
 func buildProtoSource(files []string, root string, git *gitOrigin) (*builtSource, *Candidate, []Gap) {
+	parsedFiles := make([]string, 0, len(files))
 	infos := make([]protoFileInfo, 0, len(files))
 	dirs := make([]string, 0, len(files))
 	var methods, httpMethods, services int
@@ -37,6 +39,7 @@ func buildProtoSource(files []string, root string, git *gitOrigin) (*builtSource
 			continue
 		}
 		info := analyzeProto(repoRelativePath(root, f), data)
+		parsedFiles = append(parsedFiles, f)
 		infos = append(infos, info)
 		dirs = append(dirs, filepath.Dir(f))
 		methods += info.methods
@@ -49,7 +52,7 @@ func buildProtoSource(files []string, root string, git *gitOrigin) (*builtSource
 	}
 
 	// Prefer a root under which local imports resolve; else common ancestor.
-	protoDir := resolveProtoRoot(files, imports, commonDir(dirs))
+	protoDir := resolveProtoRoot(parsedFiles, imports, commonDir(dirs))
 	cand := &Candidate{
 		Path: repoRelativePath(root, protoDir), Format: "proto", Parsed: true,
 		Metrics: &Metrics{Operations: methods},
@@ -69,22 +72,65 @@ func buildProtoSource(files []string, root string, git *gitOrigin) (*builtSource
 			Blocking: true}}
 	}
 
+	resolution := resolveProtoClosure(parsedFiles, infos, root)
+	if len(resolution.missing) > 0 {
+		gaps := make([]Gap, 0, len(resolution.missing))
+		for _, missing := range resolution.missing {
+			// Input scope, like the no-http refusal above: no source is written,
+			// so there is no source entry for a source-scoped gap to hang on.
+			gaps = append(gaps, Gap{
+				Kind: gapRefUnresolved, Scope: "input", Ref: cand.Path,
+				Message:  fmt.Sprintf("proto import %q from %s has no repository file or reproducibly pinned dependency", missing.path, missing.importer),
+				Blocking: true,
+			})
+		}
+		cand.Reason += "; not emitted (unresolved import closure)"
+		return nil, cand, gaps
+	}
+
+	// One layout decision for the whole tree: paths are either relative to the
+	// proto root or carry the Go module prefix. The relative path is checked
+	// rather than joined blindly — filepath.Join would fold a "../sibling"
+	// escape into a module path that names nothing.
+	stageRoot, prefix := protoDir, ""
+	if resolution.moduleMapped {
+		stageRoot, prefix = resolution.moduleRoot, resolution.modulePath
+	}
+	stagedPath := func(file string) (string, bool) {
+		rel, err := filepath.Rel(stageRoot, file)
+		if err != nil {
+			return "", false
+		}
+		staged := filepath.Join(prefix, rel)
+		if !filepath.IsLocal(staged) {
+			return "", false
+		}
+		return filepath.ToSlash(staged), true
+	}
+
+	closureSet := make(map[string]bool, len(resolution.closure))
+	for _, file := range resolution.closure {
+		closureSet[filepath.Clean(file)] = true
+	}
 	var entries []string
-	for _, info := range infos {
-		if info.services > 0 {
-			if rel, err := filepath.Rel(protoDir, filepath.Join(root, filepath.FromSlash(info.rel))); err == nil {
-				entries = append(entries, filepath.ToSlash(rel))
-			}
+	for i, info := range infos {
+		file := filepath.Clean(parsedFiles[i])
+		if info.services == 0 || !closureSet[file] {
+			continue
+		}
+		if rel, ok := stagedPath(file); ok {
+			entries = append(entries, rel)
 		}
 	}
-	// No services: still stage every file so protoc has entrypoints.
+	// No services: still stage every reachable file so protoc has entrypoints.
 	if len(entries) == 0 {
-		for _, f := range files {
-			if rel, err := filepath.Rel(protoDir, f); err == nil {
-				entries = append(entries, filepath.ToSlash(rel))
+		for _, file := range resolution.closure {
+			if rel, ok := stagedPath(file); ok {
+				entries = append(entries, rel)
 			}
 		}
 	}
+	sort.Strings(entries)
 
 	repoName := ""
 	if git != nil {
@@ -96,32 +142,69 @@ func buildProtoSource(files []string, root string, git *gitOrigin) (*builtSource
 		yc:        &ycSource{Backend: "proto"},
 		inputRoot: root,
 	}
-	block := &protoBlock{Entries: entries}
-	// The closure is every .proto staged into the tree, keyed repo-relative.
-	closure := make([]string, 0, len(files))
-	for _, f := range files {
-		if rel, err := filepath.Rel(root, f); err == nil {
+	block := &protoBlock{Entries: entries, Dependencies: resolution.dependencies}
+	if resolution.moduleMapped {
+		block.ImportRoots = []string{resolution.modulePath}
+	}
+	// Evidence is the repository's own protos the entries reach, keyed
+	// repo-relative. A vendored provider tree says nothing about where this API
+	// lives, so it must not decide the source's location.
+	own := make([]string, 0, len(resolution.closure))
+	for _, file := range resolution.closure {
+		if rel, err := filepath.Rel(root, file); err == nil {
+			own = append(own, filepath.ToSlash(rel))
+		}
+	}
+	sort.Strings(own)
+	b.inputFiles = own
+
+	// Pinning is a wider claim than evidence: the provider has to be fetchable
+	// at the same ref, or `lathe sync-specs` compiles against a tree missing it.
+	closure := append([]string(nil), own...)
+	for _, provider := range resolution.vendored {
+		if rel, err := filepath.Rel(root, provider.abs); err == nil {
 			closure = append(closure, filepath.ToSlash(rel))
 		}
 	}
-	b.inputFiles = append([]string(nil), closure...)
+	sort.Strings(closure)
 	pinned := git.pinnable(closure)
 	if pinned {
 		b.origin = &Origin{Type: "repo_url", RepoURL: git.repoURL, PinnedTag: git.pinnedTag, RefKind: git.refKind}
 		b.yc.RepoURL = git.repoURL
 		b.yc.PinnedTag = git.pinnedTag
+		stageTo := "."
+		if prefix != "" {
+			stageTo = prefix
+		}
 		from := "."
-		if rel, err := filepath.Rel(git.root, protoDir); err == nil && rel != "." {
+		if rel, err := filepath.Rel(git.root, stageRoot); err == nil && rel != "." {
 			from = filepath.ToSlash(rel)
 		}
-		block.Staging = []stagingEntry{{From: from, To: "."}}
+		block.Staging = []stagingEntry{{From: from, To: stageTo}}
+		// A vendored provider tree stages at the sync root: protoc looks for it
+		// under the import path exactly as the importing file wrote it.
+		staged := map[stagingEntry]bool{block.Staging[0]: true}
+		for _, vendorRoot := range resolution.vendorRoots {
+			rel, err := filepath.Rel(git.root, vendorRoot)
+			if err != nil {
+				continue
+			}
+			entry := stagingEntry{From: filepath.ToSlash(rel), To: "."}
+			if !staged[entry] {
+				staged[entry] = true
+				block.Staging = append(block.Staging, entry)
+			}
+		}
 	} else {
 		b.origin = &Origin{Type: "local_path"}
 		block.Staging = []stagingEntry{{From: ".", To: "."}}
-		for _, f := range files {
-			if rel, err := filepath.Rel(protoDir, f); err == nil {
-				b.copies = append(b.copies, copyItem{absFrom: f, relTo: filepath.ToSlash(rel)})
+		for _, file := range resolution.closure {
+			if rel, ok := stagedPath(file); ok {
+				b.copies = append(b.copies, copyItem{absFrom: file, relTo: rel})
 			}
+		}
+		for _, provider := range resolution.vendored {
+			b.copies = append(b.copies, copyItem{absFrom: provider.abs, relTo: provider.rel})
 		}
 	}
 	b.yc.Proto = block
