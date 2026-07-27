@@ -91,9 +91,10 @@ func buildProtoSource(files []string, root string, git *gitOrigin) (*builtSource
 		repoName = git.repoName
 	}
 	b := &builtSource{
-		baseName: firstNonEmpty(sanitizeName(repoName), sanitizeName(filepath.Base(protoDir)), "proto"),
-		identity: "proto",
-		yc:       &ycSource{Backend: "proto"},
+		baseName:  firstNonEmpty(sanitizeName(repoName), sanitizeName(filepath.Base(protoDir)), "proto"),
+		identity:  "proto",
+		yc:        &ycSource{Backend: "proto"},
+		inputRoot: root,
 	}
 	block := &protoBlock{Entries: entries}
 	// The closure is every .proto staged into the tree, keyed repo-relative.
@@ -103,6 +104,7 @@ func buildProtoSource(files []string, root string, git *gitOrigin) (*builtSource
 			closure = append(closure, filepath.ToSlash(rel))
 		}
 	}
+	b.inputFiles = append([]string(nil), closure...)
 	pinned := git.pinnable(closure)
 	if pinned {
 		b.origin = &Origin{Type: "repo_url", RepoURL: git.repoURL, PinnedTag: git.pinnedTag, RefKind: git.refKind}

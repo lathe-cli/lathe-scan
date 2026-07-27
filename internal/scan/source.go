@@ -19,10 +19,12 @@ type builtSource struct {
 	// moves the moment a file is added, and provKey already includes the backend.
 	identity string
 
-	origin *Origin
-	yc     *ycSource
-	copies []copyItem
-	synth  []synthFile
+	origin     *Origin
+	yc         *ycSource
+	copies     []copyItem
+	synth      []synthFile
+	inputFiles []string // original evidence paths, relative to inputRoot
+	inputRoot  string   // physical root inputFiles are relative to
 
 	report *SourceReport
 }
@@ -71,9 +73,13 @@ func buildSource(c *Candidate, p *parsed, root string, git *gitOrigin) *builtSou
 		repoName = git.repoName
 	}
 	b := &builtSource{
-		baseName: firstNonEmpty(sanitizeName(p.title), sanitizeName(repoName), sanitizeName(parentDirName(c.Path)), "source"),
-		identity: c.Path,
-		yc:       &ycSource{DefaultHostname: p.hostname, Backend: p.format},
+		baseName:  firstNonEmpty(sanitizeName(p.title), sanitizeName(repoName), sanitizeName(parentDirName(c.Path)), "source"),
+		identity:  c.Path,
+		yc:        &ycSource{DefaultHostname: p.hostname, Backend: p.format},
+		inputRoot: root,
+		inputFiles: []string{
+			c.Path,
+		},
 	}
 
 	block := &filesBlock{Files: []string{c.Path}}
@@ -163,12 +169,18 @@ func bundleSource(c *Candidate, p *parsed, root string) *builtSource {
 		draftName = "swagger.yaml"
 	}
 	block := &filesBlock{Files: []string{draftName}}
+	inputFiles := make([]string, 0, len(files))
+	for _, file := range files {
+		inputFiles = append(inputFiles, repoRelativePath(root, file))
+	}
 	b := &builtSource{
-		baseName: firstNonEmpty(sanitizeName(p.title), sanitizeName(parentDirName(c.Path)), "api"),
-		identity: c.Path,
-		origin:   &Origin{Type: "local_path"},
-		yc:       &ycSource{DefaultHostname: p.hostname, Backend: p.format},
-		synth:    []synthFile{{relTo: draftName, content: bundled}},
+		baseName:   firstNonEmpty(sanitizeName(p.title), sanitizeName(parentDirName(c.Path)), "api"),
+		identity:   c.Path,
+		origin:     &Origin{Type: "local_path"},
+		yc:         &ycSource{DefaultHostname: p.hostname, Backend: p.format},
+		synth:      []synthFile{{relTo: draftName, content: bundled}},
+		inputRoot:  root,
+		inputFiles: inputFiles,
 	}
 	if p.format == "swagger" {
 		b.yc.Swagger = block

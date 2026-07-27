@@ -14,8 +14,8 @@ type Report struct {
 	Summary       Summary        `json:"summary"`
 	Inputs        []InputReport  `json:"inputs"`
 	Sources       []SourceReport `json:"sources"`
-	// Preserved lists entries --merge carried over rather than produced; together
-	// with Sources it accounts for every entry in sources.yaml.
+	// Preserved lists manifest entries --merge carried over rather than produced.
+	// Sources keeps every usable candidate; only recommended candidates are emitted.
 	Preserved []PreservedSource `json:"preserved,omitempty"`
 	Gaps      []Gap             `json:"gaps"`
 }

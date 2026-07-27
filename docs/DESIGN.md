@@ -24,13 +24,16 @@ Each run follows one deterministic pipeline:
 3. Run L1 parsers over existing API artifacts.
 4. Run L2 only when that input has no usable L1 source.
 5. Reject sources that Lathe would load but generate no commands from.
-6. Assign stable names, write the manifest, and emit `report.json` and
-   `GAPS.md`.
+6. Group usable candidates by logical source, recommend one per group, and emit
+   only those recommendations.
+7. Assign stable names, write the manifest, and report every usable candidate
+   in `report.json` and `GAPS.md`.
 
-One input may yield multiple sources. Multiple directories or archives are
-aggregated into one source map; no monorepo is collapsed to a single API. The
-report may mark one source per input as recommended, but every usable source is
-emitted.
+One input may yield multiple source candidates. Multiple directories or
+archives are aggregated into one source map; no monorepo is collapsed to a
+single API. Candidates with the same derived base name compete as alternatives;
+different base names remain independent APIs. The report retains every usable
+candidate and `sources.yaml` receives one recommendation per group.
 
 ## L1: Existing API Artifacts
 
@@ -127,8 +130,9 @@ location key. Identity is independent of source name and discovery order.
 
 The merge contract is:
 
-- Ownership is recovered from both `sources[]` and `preserved[]` in the prior
-  report, so it survives repeated partial scans.
+- Ownership is recovered from recommended `sources[]` and `preserved[]` in the
+  prior report, so it survives repeated partial scans. Report-only candidates
+  never claim a manifest entry.
 - A source produced again updates the entry with matching provenance.
 - Scanner-derived origin and backend fields are refreshed. Unknown fields and
   human policy such as `display_name`, `groups`, `output`, and `selection` are
@@ -138,8 +142,8 @@ The merge contract is:
 - If an input produces no usable result, its prior entries remain with a
   `source-kept` gap; the underlying failure remains blocking. A failed scan is
   not evidence that an API is gone.
-- If a successfully scanned input produces a changed set, owned entries it no
-  longer accounts for leave the manifest.
+- If a successfully scanned input produces a changed recommendation, owned
+  entries that are no longer recommended leave the manifest.
 - A non-empty manifest paired with a pre-provenance report is refused; ownership
   cannot be reconstructed safely.
 
@@ -157,15 +161,18 @@ source. Reports are audit input, never authority to delete data.
 
 - `summary` records input, source, usable, Postman, and exit counts.
 - `inputs[]` records origin, candidates, parse errors, scores, and selections.
-- `sources[]` records entries produced by this run with confidence, command
-  yield, provenance, metrics, and gaps.
+- `sources[]` records every usable candidate found by this run with confidence,
+  recommendation, command yield, provenance, metrics, and gaps. For an
+  unmaterialized local candidate, `files` identifies its original scanned
+  evidence; ZIP evidence has no local origin until selected and extracted.
 - `preserved[]` records manifest entries carried through a merge.
 - `gaps[]` records unresolved global or input-level behavior.
 
-`sources[]` plus `preserved[]` accounts for every written manifest entry.
-`summary.usable` equals the number of sources produced by the run, and
-`summary.exit_code` matches the process result. An empty result still writes
-`report.json` and `GAPS.md` with a blocking explanation.
+Recommended, unblocked entries in `sources[]`, plus `preserved[]`, account for
+the manifest. `summary.sources` counts reported candidates,
+`summary.usable` counts entries emitted by the run, and `summary.exit_code`
+matches the process result. An empty result still writes `report.json` and
+`GAPS.md` with a blocking explanation.
 
 Gap kinds form a stable vocabulary:
 

@@ -44,9 +44,10 @@ func buildGraphQLSource(files []string, root string, git *gitOrigin) (*builtSour
 		repoName = git.repoName
 	}
 	b := &builtSource{
-		baseName: firstNonEmpty(sanitizeName(repoName), sanitizeName(parentDirName(primary)), "graphql"),
-		identity: "graphql",
-		yc:       &ycSource{Backend: "graphql"},
+		baseName:  firstNonEmpty(sanitizeName(repoName), sanitizeName(parentDirName(primary)), "graphql"),
+		identity:  "graphql",
+		yc:        &ycSource{Backend: "graphql"},
+		inputRoot: root,
 	}
 	block := &graphqlBlock{
 		Schema: primary,
@@ -57,6 +58,7 @@ func buildGraphQLSource(files []string, root string, git *gitOrigin) (*builtSour
 	for _, s := range sources {
 		closure = append(closure, s.Name)
 	}
+	b.inputFiles = append([]string(nil), closure...)
 	pinned := git.pinnable(closure)
 	if pinned {
 		b.origin = &Origin{Type: "repo_url", RepoURL: git.repoURL, PinnedTag: git.pinnedTag, RefKind: git.refKind}

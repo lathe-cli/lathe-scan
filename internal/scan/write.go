@@ -123,6 +123,11 @@ func loadPriorRun(opts Options, inputKeys map[string]bool, built []*builtSource)
 	}
 	unowned := 0
 	for _, s := range prev.Sources {
+		// Schema 2 reports candidates that were never written. They explain the
+		// recommendation but cannot claim ownership of a manifest entry.
+		if prev.SchemaVersion >= 2 && !s.Recommended {
+			continue
+		}
 		// A sources[] entry without provenance predates the field.
 		if s.Provenance == nil {
 			unowned++
@@ -213,11 +218,17 @@ func assignNames(opts Options, built []*builtSource, prior *priorRun) map[string
 	}
 
 	// Reuse-in-place first, so a source that owns <out>/<name> keeps it and is
-	// unaffected by the reservations added below.
-	pending := built[:0:0]
+	// unaffected by the reservations added below. Report-only candidates cannot
+	// retain or reserve manifest names: when a recommendation changes, the new
+	// winner must be able to inherit the logical source's now-free base name.
+	var pending, reportOnly []*builtSource
 	for _, b := range built {
+		if !b.report.Recommended {
+			reportOnly = append(reportOnly, b)
+			continue
+		}
 		name, ok := prior.byProv[provKey(b.provenance())]
-		if !ok || used[name] {
+		if !ok || used[name] || opts.Name != "" && name != b.baseName {
 			pending = append(pending, b)
 			continue
 		}
@@ -229,6 +240,12 @@ func assignNames(opts Options, built []*builtSource, prior *priorRun) map[string
 		used[name] = true
 	}
 	for _, b := range pending {
+		b.Name = uniqueName(b.baseName, used)
+		used[b.Name] = true
+	}
+	// Names make report candidates addressable to humans, but are assigned only
+	// after every manifest source so they cannot perturb emitted output.
+	for _, b := range reportOnly {
 		b.Name = uniqueName(b.baseName, used)
 		used[b.Name] = true
 	}
@@ -283,13 +300,38 @@ func writeOutputs(opts Options, final map[string]yaml.Node, built []*builtSource
 		return 0, err
 	}
 
+	emitted := map[string]bool{}
 	for _, b := range built {
+		b.report.Name = b.Name
+		b.report.Origin = b.origin
+		b.report.Input = b.fromInput
+		b.report.Provenance = b.provenance()
+		if !b.report.Recommended {
+			if b.origin.Type == "local_path" {
+				// This candidate was not materialized under --out. Report the
+				// original evidence instead of pairing the input root with output
+				// artifact names that do not exist there. ZIP evidence has no
+				// directory origin until selected and extracted.
+				b.report.Files = append([]string(nil), b.inputFiles...)
+				if isZipInput(b.fromInput) {
+					b.report.Origin = nil
+				} else {
+					origin := *b.origin
+					origin.LocalPath = b.inputRoot
+					b.report.Origin = &origin
+				}
+			}
+			report.Sources = append(report.Sources, *b.report)
+			continue
+		}
+
 		// Resolved before anything is copied: a source we decline to update must
 		// not leave new material on disk either.
 		if gap, ok := blockedByPolicy(b, prior); !ok {
 			final[b.Name] = prior.priorFor[provKey(b.provenance())]
 			report.Preserved = append(report.Preserved, PreservedSource{Name: b.Name, Provenance: b.provenance()})
 			report.Gaps = append(report.Gaps, gap)
+			report.Sources = append(report.Sources, *b.report)
 			continue
 		}
 
@@ -307,11 +349,8 @@ func writeOutputs(opts Options, final map[string]yaml.Node, built []*builtSource
 		}
 		final[b.Name] = node
 
-		b.report.Name = b.Name
-		b.report.Origin = b.origin
-		b.report.Input = b.fromInput
-		b.report.Provenance = b.provenance()
 		report.Sources = append(report.Sources, *b.report)
+		emitted[b.Name] = true
 	}
 
 	for name := range prior.carried {
@@ -324,7 +363,7 @@ func writeOutputs(opts Options, final map[string]yaml.Node, built []*builtSource
 			Blocking: false})
 	}
 	sort.Slice(report.Preserved, func(i, j int) bool { return report.Preserved[i].Name < report.Preserved[j].Name })
-	fillReportMeta(report, postmanCandidates)
+	fillReportMeta(report, postmanCandidates, emitted)
 
 	sourcesPath := filepath.Join(opts.Out, sourcesFileName)
 	if len(final) > 0 {
@@ -368,7 +407,7 @@ func writeOutputs(opts Options, final map[string]yaml.Node, built []*builtSource
 			return 0, fmt.Errorf("write report to stdout: %w", err)
 		}
 	}
-	return len(report.Sources), nil
+	return len(emitted), nil
 }
 
 func writeReport(path string, report *Report) error {
@@ -652,7 +691,7 @@ func writeUnder(destDir, relTo string, data []byte) error {
 	return nil
 }
 
-func fillReportMeta(report *Report, postmanCandidates int) {
+func fillReportMeta(report *Report, postmanCandidates int, emitted map[string]bool) {
 	// [] rather than null: an empty list is a cleaner contract for a consumer.
 	for i := range report.Sources {
 		if report.Sources[i].Gaps == nil {
@@ -662,13 +701,15 @@ func fillReportMeta(report *Report, postmanCandidates int) {
 	report.Summary = Summary{
 		Inputs:            len(report.Inputs),
 		Sources:           len(report.Sources),
-		Usable:            len(report.Sources),
+		Usable:            len(emitted),
 		PostmanCandidates: postmanCandidates,
-		ExitCode:          exitCodeFor(len(report.Sources)),
+		ExitCode:          exitCodeFor(len(emitted)),
 	}
 	byInput := map[string][]string{}
 	for _, s := range report.Sources {
-		byInput[s.Input] = append(byInput[s.Input], s.Name)
+		if emitted[s.Name] {
+			byInput[s.Input] = append(byInput[s.Input], s.Name)
+		}
 	}
 	for i := range report.Inputs {
 		names := byInput[report.Inputs[i].Input]
