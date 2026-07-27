@@ -67,7 +67,14 @@ Backend-specific rules:
 - OpenAPI 3 uses non-empty relative `openapi3.files`; Swagger 2 uses
   `swagger.files` and is never silently converted.
 - Proto uses `entries` and `staging`. Trees without HTTP annotations are
-  reported but not emitted; compilation remains an explicit verification gap.
+  reported but not emitted. Imports are traversed from service entries and
+  resolved in order: repository files, then provider trees that discovery skips
+  as third-party, then dependencies pinned by v1/v2 `buf.lock` or `go.mod` plus
+  `go.sum`. Only `google/protobuf/*` is compiler-provided. A pin is emitted only
+  in the form Lathe accepts, so a shape it would reject stays an unresolved
+  import. Imports carrying the repository's Go module prefix are mapped back to
+  that module root only when the whole closure lives under it. Compilation
+  remains an explicit verification gap.
 - GraphQL uses one schema path and an explicit non-empty `expose` policy. The
   discovered surface is proposed for review, never treated as approved.
 - Postman is converted to a medium-confidence OpenAPI 3 draft with a

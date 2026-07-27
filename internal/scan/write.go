@@ -43,9 +43,21 @@ type filesBlock struct {
 }
 
 type protoBlock struct {
+	Staging      []stagingEntry    `yaml:"staging"`
+	Entries      []string          `yaml:"entries"`
+	ImportRoots  []string          `yaml:"import_roots,omitempty"`
+	Dependencies []protoDependency `yaml:"dependencies,omitempty"`
+}
+
+type protoDependency struct {
+	Kind        string         `yaml:"kind"`
+	Module      string         `yaml:"module,omitempty"`
+	Version     string         `yaml:"version,omitempty"`
+	Sum         string         `yaml:"sum,omitempty"`
+	Commit      string         `yaml:"commit,omitempty"`
+	Digest      string         `yaml:"digest,omitempty"`
+	LockVersion string         `yaml:"lock_version,omitempty"`
 	Staging     []stagingEntry `yaml:"staging"`
-	Entries     []string       `yaml:"entries"`
-	ImportRoots []string       `yaml:"import_roots,omitempty"`
 }
 
 type stagingEntry struct {
@@ -495,7 +507,7 @@ var (
 	ownedBlockKeys  = map[string][]string{
 		"openapi3": {"files"},
 		"swagger":  {"files"},
-		"proto":    {"staging", "entries", "import_roots"},
+		"proto":    {"staging", "entries", "import_roots", "dependencies"},
 		"graphql":  {"schema", "expose"},
 	}
 )
@@ -741,6 +753,12 @@ func copyLocal(b *builtSource, destDir string) error {
 // existing component from destDir down is checked, and the target itself with
 // Lstat, since Stat calls a dangling symlink "absent" and then writes through it.
 func writeUnder(destDir, relTo string, data []byte) error {
+	// Some relTo values are derived from scanned source (a proto import path, a
+	// go.mod module path). The symlink checks below answer "where does this path
+	// land", not "is this path ours" — a lexical escape needs no symlink at all.
+	if !filepath.IsLocal(filepath.FromSlash(relTo)) {
+		return fmt.Errorf("write %s: escapes the output directory", relTo)
+	}
 	dest := filepath.Join(destDir, filepath.FromSlash(relTo))
 	if link, err := containsSymlink(destDir, dest); err != nil {
 		return fmt.Errorf("write %s: %w", dest, err)
