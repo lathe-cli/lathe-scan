@@ -202,7 +202,7 @@ func scanInput(input, inputKey, scanPath, kindHint string, opts Options) (*input
 	groups := map[string][]*builtSource{}
 	for _, b := range ir.sources {
 		b.inputKey = inputKey
-		groups[b.baseName] = append(groups[b.baseName], b)
+		groups[b.groupKey()] = append(groups[b.groupKey()], b)
 	}
 	for _, group := range groups {
 		recommend(group, opts.Prefer).report.Recommended = true

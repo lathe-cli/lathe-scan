@@ -55,7 +55,7 @@ func Execute(opts Options) error {
 
 	// Non-nil so report.json carries [] rather than null: an empty list is a
 	// cleaner contract for anything consuming this file.
-	report := &Report{SchemaVersion: 2, ToolVersion: version, Gaps: []Gap{}}
+	report := &Report{SchemaVersion: 3, ToolVersion: version, Gaps: []Gap{}}
 	inputs, inputKeys := normalizeInputs(opts.Inputs)
 
 	var built []*builtSource

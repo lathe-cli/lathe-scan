@@ -2,7 +2,9 @@ package scan
 
 import (
 	"fmt"
+	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -56,6 +58,32 @@ func (b *builtSource) sortKey() string {
 		first = b.copies[0].absFrom
 	}
 	return strings.Join([]string{b.baseName, b.yc.Backend, b.fromInput, first}, "\x00")
+}
+
+var logicalVersionDir = regexp.MustCompile(`(?i)^v?\d+(?:[._-]\d+)*(?:[._-]?(?:alpha|beta|rc)\d*)?$`)
+
+// groupKey requires candidates to share both a derived name and a location
+// lineage. A display name alone is not identity: unrelated monorepo APIs often
+// use generic titles such as "API". Recognized version directories collapse to
+// their parent so docs/v1 and docs/master can still compete as revisions.
+func (b *builtSource) groupKey() string {
+	location := "."
+	if len(b.inputFiles) > 0 {
+		location = path.Dir(filepath.ToSlash(b.inputFiles[0]))
+		for isLogicalVersionDir(path.Base(location)) {
+			location = path.Dir(location)
+		}
+	}
+	return b.baseName + "\x00" + location
+}
+
+func isLogicalVersionDir(name string) bool {
+	switch strings.ToLower(name) {
+	case "main", "master", "latest", "current", "stable", "next":
+		return true
+	default:
+		return logicalVersionDir.MatchString(name)
+	}
 }
 
 func buildSource(c *Candidate, p *parsed, root string, git *gitOrigin) *builtSource {

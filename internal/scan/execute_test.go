@@ -1037,7 +1037,7 @@ func TestExecuteRejectsUnknownPrefer(t *testing.T) {
 
 func TestExecutePreferPicksRecommended(t *testing.T) {
 	recommendedBackend := func(prefer string) string {
-		in := inputDir(t, "api/openapi.yaml", specOneOp)
+		in := inputDir(t, "openapi.yaml", specOneOp)
 		writeFile(t, in, "tie.graphql", sdlOneQuery)
 		out := t.TempDir()
 		if err := Execute(Options{Inputs: []string{in}, Out: out, Prefer: prefer}); err != nil {
@@ -1117,6 +1117,108 @@ func TestExecuteRecommendsEachLogicalSource(t *testing.T) {
 	}
 }
 
+func TestExecuteKeepsIndependentAPIsWithSameTitle(t *testing.T) {
+	in := t.TempDir()
+	orders := strings.Replace(specOneOp, "title: Tie", "title: API", 1)
+	orders = strings.Replace(orders, "/a:", "/orders:", 1)
+	admin := strings.Replace(specOneOp, "title: Tie", "title: API", 1)
+	admin = strings.Replace(admin, "/a:", "/admin:", 1)
+	writeFile(t, in, "services/orders/openapi.yaml", orders)
+	writeFile(t, in, "services/admin/openapi.yaml", admin)
+
+	out := t.TempDir()
+	if err := Execute(Options{Inputs: []string{in}, Out: out}); err != nil {
+		t.Fatal(err)
+	}
+	sources := readSources(t, filepath.Join(out, sourcesFileName))
+	if len(sources) != 2 {
+		t.Fatalf("same-titled independent APIs collapsed into %d manifest source(s): %v", len(sources), sources)
+	}
+	recommended := 0
+	for _, source := range readReport(t, out).Sources {
+		if source.Recommended {
+			recommended++
+		}
+	}
+	if recommended != 2 {
+		t.Errorf("recommended candidates = %d, want both independent APIs", recommended)
+	}
+}
+
+func TestExecuteMergePreservesGraphQLExposeAcrossRecommendationChanges(t *testing.T) {
+	in := t.TempDir()
+	writeFile(t, in, "api.graphql", "type Query { alpha: String beta: String }\n")
+	writeFile(t, in, "openapi.yaml", strings.Replace(specOneOp, "title: Tie", "title: API", 1))
+	out := t.TempDir()
+	if err := Execute(Options{Inputs: []string{in}, Out: out, Merge: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(out, sourcesFileName)
+	sources := readSources(t, path)
+	for _, source := range sources {
+		if source["backend"] != "graphql" {
+			continue
+		}
+		graphql, _ := source["graphql"].(map[string]any)
+		graphql["expose"] = map[string]any{"queries": []any{"alpha"}}
+	}
+	data, err := yaml.Marshal(map[string]any{"sources": sources})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	openapiWins := strings.Replace(specOneOp, "title: Tie", "title: API", 1)
+	openapiWins = strings.Replace(openapiWins, "paths:\n", `paths:
+  /b:
+    get:
+      operationId: b
+      responses:
+        "200": { description: ok }
+  /c:
+    get:
+      operationId: c
+      responses:
+        "200": { description: ok }
+`, 1)
+	writeFile(t, in, "openapi.yaml", openapiWins)
+	if err := Execute(Options{Inputs: []string{in}, Out: out, Merge: true}); err != nil {
+		t.Fatal(err)
+	}
+	if source := firstSource(t, path); source["backend"] != "openapi3" {
+		t.Fatalf("middle recommendation backend = %v, want openapi3", source["backend"])
+	}
+
+	other := inputDir(t, "openapi.yaml", strings.Replace(specOneOp, "title: Tie", "title: Other", 1))
+	if err := Execute(Options{Inputs: []string{other}, Out: out, Merge: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, in, "api.graphql", "type Query { alpha: String beta: String gamma: String delta: String }\n")
+	if err := Execute(Options{Inputs: []string{in}, Out: out, Merge: true}); err != nil {
+		t.Fatal(err)
+	}
+	var source map[string]any
+	for _, candidate := range readSources(t, path) {
+		if candidate["backend"] == "graphql" {
+			source = candidate
+			break
+		}
+	}
+	if source == nil {
+		t.Fatal("final manifest has no GraphQL recommendation")
+	}
+	graphql, _ := source["graphql"].(map[string]any)
+	expose, _ := graphql["expose"].(map[string]any)
+	queries, _ := expose["queries"].([]any)
+	if len(queries) != 1 || queries[0] != "alpha" {
+		t.Fatalf("recommendation round trip widened graphql.expose: %v", expose)
+	}
+}
+
 func TestExecuteMergeRecommendationChangeKeepsLogicalName(t *testing.T) {
 	in := t.TempDir()
 	v1 := strings.Replace(specOneOp, "paths:\n", `paths:
@@ -1184,8 +1286,8 @@ func TestExecuteReportOnlySyntheticCandidateNamesInputEvidence(t *testing.T) {
       responses:
         "200": { description: ok }
 `, 1)
-	writeFile(t, in, "specs/openapi.yaml", openapi)
-	writeFile(t, in, "collections/acme.postman_collection.json", postmanCollection)
+	writeFile(t, in, "api/openapi.yaml", openapi)
+	writeFile(t, in, "api/acme.postman_collection.json", postmanCollection)
 
 	out := t.TempDir()
 	if err := Execute(Options{Inputs: []string{in}, Out: out}); err != nil {
@@ -1205,7 +1307,7 @@ func TestExecuteReportOnlySyntheticCandidateNamesInputEvidence(t *testing.T) {
 		if source.Origin == nil || source.Origin.LocalPath != physical {
 			t.Errorf("report-only origin = %+v, want input root %q", source.Origin, physical)
 		}
-		if len(source.Files) != 1 || source.Files[0] != "collections/acme.postman_collection.json" {
+		if len(source.Files) != 1 || source.Files[0] != "api/acme.postman_collection.json" {
 			t.Errorf("report-only files = %v, want original Postman evidence", source.Files)
 		}
 		return

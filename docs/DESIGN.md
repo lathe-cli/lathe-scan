@@ -31,9 +31,11 @@ Each run follows one deterministic pipeline:
 
 One input may yield multiple source candidates. Multiple directories or
 archives are aggregated into one source map; no monorepo is collapsed to a
-single API. Candidates with the same derived base name compete as alternatives;
-different base names remain independent APIs. The report retains every usable
-candidate and `sources.yaml` receives one recommendation per group.
+single API. Candidates compete as alternatives only when they share a derived
+base name and location lineage; recognized version directories such as `v1` and
+`master` belong to the same lineage. Generic titles alone never collapse APIs
+from unrelated service directories. The report retains every usable candidate
+and `sources.yaml` receives one recommendation per group.
 
 ## L1: Existing API Artifacts
 
@@ -137,7 +139,9 @@ The merge contract is:
 - Scanner-derived origin and backend fields are refreshed. Unknown fields and
   human policy such as `display_name`, `groups`, `output`, and `selection` are
   preserved.
-- Policy follows exact provenance, never a reusable source name.
+- Policy follows exact provenance, never a reusable source name. Safety-critical
+  GraphQL exposure policy remains in the report while its candidate is not
+  recommended, so a later recommendation cannot widen the approved surface.
 - Foreign entries are carried through untouched.
 - If an input produces no usable result, its prior entries remain with a
   `source-kept` gap; the underlying failure remains blocking. A failed scan is
@@ -165,6 +169,9 @@ source. Reports are audit input, never authority to delete data.
   recommendation, command yield, provenance, metrics, and gaps. For an
   unmaterialized local candidate, `files` identifies its original scanned
   evidence; ZIP evidence has no local origin until selected and extracted.
+- `policies[]` retains safety-critical human policy by exact provenance while a
+  candidate is unmaterialized or its input is not scanned, without granting that
+  candidate manifest ownership.
 - `preserved[]` records manifest entries carried through a merge.
 - `gaps[]` records unresolved global or input-level behavior.
 

@@ -74,7 +74,9 @@ type priorRun struct {
 	// priorFor is keyed by provenance, never by name: a name is reusable, and a
 	// different API inheriting the freed name must not inherit the old entry's
 	// hand-written policy with it.
-	priorFor map[string]yaml.Node
+	priorFor   map[string]yaml.Node
+	policies   map[string]PreservedPolicy
+	policyOnly map[string]bool // priorFor entries reconstructed from report policy, not the manifest
 	// kept: entries whose input produced nothing this run. Scan cannot tell "this
 	// API is gone" from "this input did not answer", and only the second reading is
 	// recoverable — a mistyped path must not delete a working entry plus the policy
@@ -89,11 +91,13 @@ func provKey(p *Provenance) string {
 
 func loadPriorRun(opts Options, inputKeys map[string]bool, built []*builtSource) (*priorRun, error) {
 	pr := &priorRun{
-		carried:  map[string]yaml.Node{},
-		ownedBy:  map[string]*Provenance{},
-		byProv:   map[string]string{},
-		priorFor: map[string]yaml.Node{},
-		kept:     map[string]*Provenance{},
+		carried:    map[string]yaml.Node{},
+		ownedBy:    map[string]*Provenance{},
+		byProv:     map[string]string{},
+		priorFor:   map[string]yaml.Node{},
+		policies:   map[string]PreservedPolicy{},
+		policyOnly: map[string]bool{},
+		kept:       map[string]*Provenance{},
 	}
 
 	if !opts.Merge {
@@ -121,9 +125,25 @@ func loadPriorRun(opts Options, inputKeys map[string]bool, built []*builtSource)
 		return nil, fmt.Errorf("%s could not be read (%v), so --merge cannot tell which of the %d entries in %s it wrote and would append duplicates; restore or delete %s, or re-run without --merge to rebuild the manifest from this scan (add --force to overwrite a non-empty --out)",
 			filepath.Join(opts.Out, reportFileName), rerr, len(sf.Sources), sourcesFileName, reportFileName)
 	}
+	if prev.SchemaVersion >= 3 {
+		for _, policy := range prev.Policies {
+			if policy.Provenance == nil || policy.GraphQLExposeYAML == "" {
+				continue
+			}
+			entry, err := sourceFromPolicy(&policy)
+			if err != nil {
+				return nil, fmt.Errorf("parse preserved policy in %s: %w", reportFileName, err)
+			}
+			key := provKey(policy.Provenance)
+			pr.priorFor[key] = entry
+			pr.policies[key] = policy
+			pr.policyOnly[key] = true
+		}
+	}
+
 	unowned := 0
 	for _, s := range prev.Sources {
-		// Schema 2 reports candidates that were never written. They explain the
+		// Schema 2+ reports candidates that were never written. They explain the
 		// recommendation but cannot claim ownership of a manifest entry.
 		if prev.SchemaVersion >= 2 && !s.Recommended {
 			continue
@@ -161,7 +181,9 @@ func loadPriorRun(opts Options, inputKeys map[string]bool, built []*builtSource)
 		// Ours from a rescanned input is rebuilt, not carried — carrying the old
 		// copy forward is what duplicated sources on every re-merge.
 		if p, ok := ownedByName[name]; ok && inputKeys[p.Input] {
-			pr.priorFor[provKey(p)] = node
+			key := provKey(p)
+			pr.priorFor[key] = node
+			delete(pr.policyOnly, key)
 			if !produced[p.Input] {
 				pr.kept[name] = p
 			}
@@ -306,6 +328,7 @@ func writeOutputs(opts Options, final map[string]yaml.Node, built []*builtSource
 		b.report.Origin = b.origin
 		b.report.Input = b.fromInput
 		b.report.Provenance = b.provenance()
+		rememberSourcePolicy(b, prior)
 		if !b.report.Recommended {
 			if b.origin.Type == "local_path" {
 				// This candidate was not materialized under --out. Report the
@@ -328,8 +351,13 @@ func writeOutputs(opts Options, final map[string]yaml.Node, built []*builtSource
 		// Resolved before anything is copied: a source we decline to update must
 		// not leave new material on disk either.
 		if gap, ok := blockedByPolicy(b, prior); !ok {
-			final[b.Name] = prior.priorFor[provKey(b.provenance())]
-			report.Preserved = append(report.Preserved, PreservedSource{Name: b.Name, Provenance: b.provenance()})
+			key := provKey(b.provenance())
+			if !prior.policyOnly[key] {
+				final[b.Name] = prior.priorFor[key]
+				report.Preserved = append(report.Preserved, PreservedSource{Name: b.Name, Provenance: b.provenance()})
+			} else {
+				gap.Message = strings.Replace(gap.Message, "left the entry untouched rather than replacing it", "did not emit the source rather than replacing its preserved policy", 1)
+			}
 			report.Gaps = append(report.Gaps, gap)
 			report.Sources = append(report.Sources, *b.report)
 			continue
@@ -363,6 +391,12 @@ func writeOutputs(opts Options, final map[string]yaml.Node, built []*builtSource
 			Blocking: false})
 	}
 	sort.Slice(report.Preserved, func(i, j int) bool { return report.Preserved[i].Name < report.Preserved[j].Name })
+	for _, policy := range prior.policies {
+		report.Policies = append(report.Policies, policy)
+	}
+	sort.Slice(report.Policies, func(i, j int) bool {
+		return provKey(report.Policies[i].Provenance) < provKey(report.Policies[j].Provenance)
+	})
 	fillReportMeta(report, postmanCandidates, emitted)
 
 	sourcesPath := filepath.Join(opts.Out, sourcesFileName)
@@ -408,6 +442,40 @@ func writeOutputs(opts Options, final map[string]yaml.Node, built []*builtSource
 		}
 	}
 	return len(emitted), nil
+}
+
+func rememberSourcePolicy(b *builtSource, prior *priorRun) {
+	if b.yc.GraphQL == nil {
+		return
+	}
+	old, ok := prior.priorFor[provKey(b.provenance())]
+	if !ok {
+		return
+	}
+	expose := mapGet(mapGet(&old, "graphql"), "expose")
+	if expose == nil {
+		return
+	}
+	data, err := yaml.Marshal(expose)
+	if err == nil {
+		policy := PreservedPolicy{Provenance: b.provenance(), GraphQLExposeYAML: string(data)}
+		prior.policies[provKey(policy.Provenance)] = policy
+	}
+}
+
+func sourceFromPolicy(policy *PreservedPolicy) (yaml.Node, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(policy.GraphQLExposeYAML), &doc); err != nil {
+		return yaml.Node{}, err
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) != 1 {
+		return yaml.Node{}, fmt.Errorf("graphql expose policy is not one YAML document")
+	}
+	graphql := yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	mapSet(&graphql, "expose", doc.Content[0])
+	entry := yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	mapSet(&entry, "graphql", &graphql)
+	return entry, nil
 }
 
 func writeReport(path string, report *Report) error {
