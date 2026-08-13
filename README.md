@@ -91,4 +91,4 @@ rewritten or removed when the current result requires it.
 
 ## License
 
-[MIT](LICENSE) © lathe-cli
+[Apache License 2.0](LICENSE) © lathe-cli
