@@ -40,7 +40,8 @@ type inputResult struct {
 // fileIndex is the result of the single tree walk each input gets. Every
 // detector reads from it instead of re-walking, so discovery stays one pass.
 type fileIndex struct {
-	specs     []string
+	specs     []string // name- or directory-hinted spec files
+	yamls     []string // every YAML file, probed by content for unhinted specs
 	protos    []string
 	graphql   []string
 	jsons     []string
@@ -81,12 +82,15 @@ func indexFiles(rootDir string) *fileIndex {
 		if isJSONFile(path) {
 			idx.jsons = append(idx.jsons, path)
 		}
+		if isYAMLFile(path) {
+			idx.yamls = append(idx.yamls, path)
+		}
 		if looksLikeSpecFile(path) {
 			idx.specs = append(idx.specs, path)
 		}
 		return nil
 	})
-	for _, l := range []*[]string{&idx.specs, &idx.protos, &idx.graphql, &idx.jsons, &idx.sources} {
+	for _, l := range []*[]string{&idx.specs, &idx.yamls, &idx.protos, &idx.graphql, &idx.jsons, &idx.sources} {
 		sort.Strings(*l)
 	}
 	if len(idx.sources) > l2MaxFiles {
@@ -139,7 +143,7 @@ func scanInput(input, inputKey, scanPath, kindHint string, opts Options) (*input
 
 	idx := indexFiles(abs)
 
-	cands, parsedByPath := parseCandidates(idx.specs, root)
+	cands, parsedByPath := parseCandidates(specCandidateFiles(idx, root), root)
 	dedupCandidates(cands, parsedByPath)
 	ir.report.Candidates = append(ir.report.Candidates, cands...)
 	for i := range cands {
@@ -289,6 +293,52 @@ func looksLikeSpecFile(path string) bool {
 	}
 	parent := strings.ToLower(filepath.Base(filepath.Dir(path)))
 	return specDirHints[parent]
+}
+
+// specCandidateFiles merges the name/directory-hinted spec files with every
+// other YAML or JSON document whose content mentions an openapi/swagger key.
+// Content is what finds a spec named petstore.yaml at the repository root; a
+// name-only heuristic silently misses every spec whose author did not follow
+// the openapi*/swagger* convention. The substring gate keeps the walk from
+// YAML-parsing every Kubernetes manifest and lockfile on the way there.
+func specCandidateFiles(idx *fileIndex, root string) []string {
+	seen := make(map[string]bool, len(idx.specs))
+	files := append([]string(nil), idx.specs...)
+	for _, f := range idx.specs {
+		seen[f] = true
+	}
+	for _, list := range [][]string{idx.yamls, idx.jsons} {
+		for _, f := range list {
+			if seen[f] {
+				continue
+			}
+			seen[f] = true
+			data, err := readWithin(root, f)
+			if err != nil {
+				continue
+			}
+			if probesAsSpec(data) {
+				files = append(files, f)
+			}
+		}
+	}
+	sort.Strings(files)
+	return files
+}
+
+// probesAsSpec is the cheap gate before a real parse: a Lathe-native spec must
+// carry an openapi or swagger version key, as a YAML key or a JSON string key.
+// A false positive costs one parse attempt that parseSpec rejects quietly; a
+// file without either token cannot be a recognizable spec at all.
+func probesAsSpec(data []byte) bool {
+	s := string(data)
+	return strings.Contains(s, "openapi:") || strings.Contains(s, `"openapi"`) ||
+		strings.Contains(s, "swagger:") || strings.Contains(s, `"swagger"`)
+}
+
+func isYAMLFile(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	return ext == ".yaml" || ext == ".yml"
 }
 
 func isProtoFile(path string) bool {

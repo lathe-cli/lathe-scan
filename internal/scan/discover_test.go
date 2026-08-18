@@ -34,6 +34,48 @@ func TestLooksLikeSpecFile(t *testing.T) {
 	}
 }
 
+// Specs are recognized by content, not name: petstore.yaml at the root and a
+// JSON swagger under an unhinted directory must both compete, while ordinary
+// YAML that merely mentions the word openapi stays out.
+func TestSpecCandidateFilesProbesByContent(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "petstore.yaml", specOpenAPI)
+	writeFile(t, root, "schemas/legacy.json", `{"swagger":"2.0","info":{"title":"Legacy"},"paths":{"/a":{"get":{"responses":{"200":{"description":"ok"}}}}}}`)
+	writeFile(t, root, "config.yaml", "port: 8080\nnote: openapi is reviewed elsewhere\n")
+
+	files := specCandidateFiles(indexFiles(root), root)
+	if len(files) != 2 {
+		t.Fatalf("candidates = %v, want petstore.yaml and schemas/legacy.json", files)
+	}
+	cands, _ := parseCandidates(files, root)
+	if len(cands) != 2 {
+		t.Fatalf("parsed candidates = %+v, want 2", cands)
+	}
+	for _, c := range cands {
+		if !c.Parsed {
+			t.Errorf("candidate %s failed to parse: %s", c.Path, c.Error)
+		}
+	}
+}
+
+func TestExecuteDiscoversSpecByContent(t *testing.T) {
+	in := inputDir(t, "petstore.yaml", specOpenAPI)
+	// Mentioning openapi in prose must not turn a config file into a candidate.
+	writeFile(t, in, "ci.yaml", "jobs:\n  lint:\n    note: validate openapi elsewhere\n")
+	out := t.TempDir()
+	if err := Execute(Options{Inputs: []string{in}, Out: out}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	srcs := readSources(t, filepath.Join(out, sourcesFileName))
+	if len(srcs) != 1 {
+		t.Fatalf("want 1 source from the unhinted spec, got %d: %v", len(srcs), srcs)
+	}
+	rep := readReport(t, out)
+	if len(rep.Inputs) != 1 || len(rep.Inputs[0].Candidates) != 1 {
+		t.Fatalf("candidates = %+v, want only petstore.yaml", rep.Inputs[0].Candidates)
+	}
+}
+
 func TestDiscoverSkipsIgnoredDirs(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "openapi.yaml", specOpenAPI)

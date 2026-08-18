@@ -159,7 +159,7 @@ func buildProtoSource(files []string, root string, git *gitOrigin) (*builtSource
 	b.inputFiles = own
 
 	// Pinning is a wider claim than evidence: the provider has to be fetchable
-	// at the same ref, or `lathe sync-specs` compiles against a tree missing it.
+	// at the same ref, or `lathe specsync` compiles against a tree missing it.
 	closure := append([]string(nil), own...)
 	for _, provider := range resolution.vendored {
 		if rel, err := filepath.Rel(root, provider.abs); err == nil {
@@ -210,7 +210,7 @@ func buildProtoSource(files []string, root string, git *gitOrigin) (*builtSource
 	b.yc.Proto = block
 
 	gaps := []Gap{{Kind: gapProtoImports, Scope: "source",
-		Message: "staging and import roots were inferred statically; run `lathe sync-specs` (needs protoc) to verify the tree compiles", Blocking: false}}
+		Message: "staging and import roots were inferred statically; run `lathe specsync` (needs protoc) to verify the tree compiles", Blocking: false}}
 	if g, ok := notAtRefGap(git, pinned); ok {
 		gaps = append(gaps, g)
 	}

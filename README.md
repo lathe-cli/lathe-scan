@@ -22,22 +22,30 @@ Go 1.25 or newer is required when building from source.
 
 ## Quick start
 
+Run the scan from a Lathe application repository (one with `go.mod` and
+`cli.yaml`; `lathe init` creates it) and point `--out` at its `specs/`
+directory, which is where Lathe reads `sources.yaml` by default:
+
 ```sh
 # Build one manifest from multiple services
-lathe-scan ../billing ../inventory --out ./out
+lathe-scan ../billing ../inventory --out ./specs
 
 # Add or refresh a service while preserving existing entries and policy
-lathe-scan ../shipping --out ./out --merge
+lathe-scan ../shipping --out ./specs --merge
 
-# Generate a CLI after reviewing sources.yaml and GAPS.md
-cd ./out
-lathe sync-specs
-lathe gen
+# Generate a CLI after reviewing specs/sources.yaml and specs/GAPS.md
+lathe bootstrap
 ```
+
+Any other `--out` works too; pass it explicitly when generating:
+`lathe bootstrap -sources <out>/sources.yaml`. Relative `local_path` entries
+resolve against the directory containing `sources.yaml`, so the scan output
+directory moves as one unit.
 
 Inputs may be repository directories or `.zip` archives. Discovery supports:
 
-- OpenAPI 3, Swagger 2, Proto, GraphQL, and Postman collections.
+- OpenAPI 3, Swagger 2, Proto, GraphQL, and Postman collections. OpenAPI and
+  Swagger documents are recognized by content, whatever the file is named.
 - Static route extraction for FastAPI, Flask, Django, Spring, NestJS, Express,
   Fastify, Gin, Echo, Chi, Rails, Laravel, ASP.NET, Ktor, Actix, and Axum.
 

@@ -448,12 +448,11 @@ func readBufDependencies(root string, entries []string) []protoDependency {
 								continue
 							}
 							deps = append(deps, protoDependency{
-								Kind:        protoDependencyBuf,
-								Module:      name,
-								Commit:      pin.Commit,
-								Digest:      pin.Digest,
-								LockVersion: lock.Version,
-								Staging:     []stagingEntry{{From: ".", To: "."}},
+								Kind:    protoDependencyBuf,
+								Module:  name,
+								Commit:  pin.Commit,
+								Digest:  pin.Digest,
+								Staging: []stagingEntry{{From: ".", To: "."}},
 							})
 						}
 					}
@@ -472,22 +471,20 @@ func readBufDependencies(root string, entries []string) []protoDependency {
 	return deps
 }
 
-// validBufPin mirrors what Lathe accepts in proto.dependencies. buf has shipped
-// several digest formats; writing one Lathe refuses would fail the whole
-// manifest at load time, which is a worse answer than an unresolved import.
+// validBufPin mirrors what Lathe accepts in proto.dependencies: a v2 lock with
+// a b5 digest. Lathe verifies every pin by re-resolving the module with
+// `buf dep update` and comparing digests, and current buf emits only b5 — so a
+// v1 lock's older digest can never pass that check. Writing one would fail the
+// whole manifest at load time, which is a worse answer than an unresolved
+// import; the fix on the user's side is `buf dep update` to a v2 lock.
 func validBufPin(lockVersion, commit, digest string) bool {
-	prefix := "b5:"
-	switch lockVersion {
-	case "v1":
-		prefix = "b4:"
-	case "v2":
-	default:
+	if lockVersion != "v2" {
 		return false
 	}
 	if len(commit) != 32 || !isLowerHex(commit) {
 		return false
 	}
-	rest, ok := strings.CutPrefix(digest, prefix)
+	rest, ok := strings.CutPrefix(digest, "b5:")
 	return ok && rest != "" && isLowerHex(rest)
 }
 
@@ -502,7 +499,7 @@ func isLowerHex(s string) bool {
 }
 
 func protoDependencyKey(dep protoDependency) string {
-	return fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s", dep.Kind, dep.Module, dep.Version, dep.Commit, dep.LockVersion)
+	return fmt.Sprintf("%s\x00%s\x00%s\x00%s", dep.Kind, dep.Module, dep.Version, dep.Commit)
 }
 
 func samePath(a, b string) bool {

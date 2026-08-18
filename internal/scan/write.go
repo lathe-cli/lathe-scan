@@ -50,14 +50,13 @@ type protoBlock struct {
 }
 
 type protoDependency struct {
-	Kind        string         `yaml:"kind"`
-	Module      string         `yaml:"module,omitempty"`
-	Version     string         `yaml:"version,omitempty"`
-	Sum         string         `yaml:"sum,omitempty"`
-	Commit      string         `yaml:"commit,omitempty"`
-	Digest      string         `yaml:"digest,omitempty"`
-	LockVersion string         `yaml:"lock_version,omitempty"`
-	Staging     []stagingEntry `yaml:"staging"`
+	Kind    string         `yaml:"kind"`
+	Module  string         `yaml:"module,omitempty"`
+	Version string         `yaml:"version,omitempty"`
+	Sum     string         `yaml:"sum,omitempty"`
+	Commit  string         `yaml:"commit,omitempty"`
+	Digest  string         `yaml:"digest,omitempty"`
+	Staging []stagingEntry `yaml:"staging"`
 }
 
 type stagingEntry struct {
@@ -921,7 +920,8 @@ func renderGaps(report *Report) string {
 	}
 
 	b.WriteString("\n## Next\n\n")
-	b.WriteString("Review sources and origins above, then point Lathe at this directory:\n\n")
-	b.WriteString("```sh\nlathe sync-specs && lathe gen\n```\n")
+	b.WriteString("Review sources and origins above. If this directory is your application's `specs/`, run:\n\n")
+	b.WriteString("```sh\nlathe bootstrap\n```\n\n")
+	b.WriteString("Otherwise name the manifest explicitly: `lathe bootstrap -sources <this-dir>/sources.yaml`.\n")
 	return b.String()
 }

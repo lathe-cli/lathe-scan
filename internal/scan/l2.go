@@ -459,9 +459,10 @@ func synthesizeOpenAPI(title, extractor string, routes []route) []byte {
 			paths[r.path] = item
 		}
 		op := map[string]any{
-			// Lathe drops operations without an operationId and aborts codegen on
-			// colliding command names, so each synthesized id must be present and
-			// unique (paths like /groups and /Groups normalize to the same base).
+			// Lathe synthesizes missing operationIds and suffixes colliding command
+			// names, but its fallbacks are positional. An explicit unique id derived
+			// from the route keeps generated command names readable and stable
+			// (paths like /groups and /Groups normalize to the same base).
 			"operationId":        uniqueOpID(operationID(r.method, r.path), usedIDs),
 			"x-lathe-confidence": "medium",
 			"x-lathe-gaps":       []any{"body", "response", "auth"},
@@ -499,8 +500,8 @@ func synthesizeOpenAPI(title, extractor string, routes []route) []byte {
 }
 
 // operationID builds a unique camelCase id like "getUsersId" from a method and
-// path. Lathe derives the command name from it (camel → kebab), so a synth op
-// without one would be dropped at codegen.
+// path. Lathe derives the command name from it (camel → kebab), so naming the
+// id here is what names the command.
 func operationID(method, path string) string {
 	var b strings.Builder
 	b.WriteString(strings.ToLower(method))
@@ -515,8 +516,8 @@ func operationID(method, path string) string {
 	return b.String()
 }
 
-// uniqueOpID keeps a synthesized operationId unique within one spec so Lathe's
-// command-name derivation cannot collide.
+// uniqueOpID keeps a synthesized operationId unique within one spec so Lathe
+// never has to disambiguate the derived command names itself.
 func uniqueOpID(base string, used map[string]bool) string {
 	id := base
 	for i := 2; used[id]; i++ {

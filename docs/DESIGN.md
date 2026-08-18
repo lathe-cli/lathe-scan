@@ -31,7 +31,11 @@ Each run follows one deterministic pipeline:
 
 One input may yield multiple source candidates. Multiple directories or
 archives are aggregated into one source map; no monorepo is collapsed to a
-single API. Candidates compete as alternatives only when they share a derived
+single API. OpenAPI, Swagger, and Postman candidates stay separate per
+document. Proto trees and GraphQL schemas are each assembled at most once per
+input, so a monorepo carrying several independent services of one of those
+kinds should be scanned per service directory.
+Candidates compete as alternatives only when they share a derived
 base name and location lineage; recognized version directories such as `v1` and
 `master` belong to the same lineage. Generic titles alone never collapse APIs
 from unrelated service directories. The report retains every usable candidate
@@ -40,9 +44,12 @@ and `sources.yaml` receives one recommendation per group.
 ## L1: Existing API Artifacts
 
 L1 recognizes OpenAPI 3, Swagger 2, Proto, GraphQL, and Postman collections.
-Discovery respects `.gitignore` and excludes dependency, build, vendored, test,
-fixture, sample, example, and generated trees. A spec the repository treats as
-generated or third-party is not selected as its contract.
+OpenAPI and Swagger documents are recognized by content — any YAML or JSON
+file that declares an `openapi` or `swagger` version — so discovery does not
+depend on file-naming conventions. Discovery respects `.gitignore` and
+excludes dependency, build, vendored, test, fixture, sample, example, and
+generated trees. A spec the repository treats as generated or third-party is
+not selected as its contract.
 
 Every candidate is parsed and recorded, including failures. Candidates are
 de-duplicated by content hash and scored by usable API surface rather than file

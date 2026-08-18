@@ -54,7 +54,7 @@ func isGitWorktree(dir string) bool {
 //
 // Being inside a pinned repository is not the same claim: an untracked, ignored,
 // or locally modified file is not at that ref, and a manifest that says
-// otherwise sends `lathe sync-specs` after something absent — or worse, after
+// otherwise sends `lathe specsync` after something absent — or worse, after
 // different content under the same path, which no one notices. Ownership of that
 // distinction belongs here rather than at each backend, because the honest
 // fallback (local_path plus a copy of the bytes we saw) is identical for all of

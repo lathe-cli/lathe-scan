@@ -358,8 +358,12 @@ func TestExecuteProtoWithHTTP(t *testing.T) {
 		t.Fatalf("dependencies = %v, want one Buf dependency", p["dependencies"])
 	}
 	dep, _ := deps[0].(map[string]any)
-	if dep["kind"] != protoDependencyBuf || dep["module"] != "buf.build/googleapis/googleapis" || dep["lock_version"] != "v2" {
+	if dep["kind"] != protoDependencyBuf || dep["module"] != "buf.build/googleapis/googleapis" {
 		t.Errorf("dependency = %v, want pinned googleapis Buf module", dep)
+	}
+	// Lathe's ProtoDependency schema has no lock_version field; emitting one is noise.
+	if _, ok := dep["lock_version"]; ok {
+		t.Errorf("dependency carries lock_version, which Lathe does not model: %v", dep)
 	}
 
 	rep := readReport(t, out)
@@ -376,22 +380,20 @@ func TestExecuteProtoWithHTTP(t *testing.T) {
 	}
 }
 
-func TestExecuteProtoReadsBufV1Lock(t *testing.T) {
+// A v1 buf.lock carries a digest Lathe cannot verify (it re-resolves pins with
+// buf, which emits only b5 digests). Emitting the pin would fail the whole
+// manifest at `lathe specsync`, so the import stays unresolved and blocks.
+func TestExecuteProtoRejectsBufV1Lock(t *testing.T) {
 	in := inputDir(t, "proto/service.proto", protoWithHTTP)
 	writeFile(t, in, "proto/buf.lock", "version: v1\ndeps:\n  - remote: buf.build\n    owner: googleapis\n    repository: googleapis\n    commit: 004180b77378443887d3b55cabc00384\n    digest: b4:4af5b88c9a1d9b36421ad84a2cff211fc74995040188dafc1c8508d36406140e40eb0ab82d21e761961e4a71631d4474e3d0608b987ca3d02d5d19012edff21d\n")
 	out := t.TempDir()
-	if err := Execute(Options{Inputs: []string{in}, Out: out}); err != nil {
-		t.Fatal(err)
+	err := Execute(Options{Inputs: []string{in}, Out: out})
+	var noSrc ErrNoSources
+	if err == nil || !asNoSources(err, &noSrc) {
+		t.Fatalf("want ErrNoSources (v1 buf.lock is not a verifiable pin), got %v", err)
 	}
-	s := firstSource(t, filepath.Join(out, sourcesFileName))
-	p, _ := s["proto"].(map[string]any)
-	deps, _ := p["dependencies"].([]any)
-	if len(deps) != 1 {
-		t.Fatalf("dependencies = %v", p["dependencies"])
-	}
-	dep, _ := deps[0].(map[string]any)
-	if dep["module"] != "buf.build/googleapis/googleapis" || dep["lock_version"] != "v1" {
-		t.Fatalf("v1 dependency = %v", dep)
+	if !hasGap(readReport(t, out).Gaps, gapRefUnresolved, true) {
+		t.Errorf("expected blocking %s gap, got %+v", gapRefUnresolved, readReport(t, out).Gaps)
 	}
 }
 
