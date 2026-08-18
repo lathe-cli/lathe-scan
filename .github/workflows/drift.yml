@@ -1,0 +1,37 @@
+name: Drift
+
+# bench and contract depend on the network and on external state that moves
+# on its own (pinned OSS repositories, lathe built from upstream main). They
+# verify main after merge instead of gating pull requests: a red run here
+# means "main drifted relative to the world", not "this diff is wrong". The
+# weekly schedule catches lathe@main drift while this repository is idle.
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+      - name: Recall benchmark against the pinned OSS corpus
+        run: make bench
+
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+      - name: Verify scan output against lathe@main
+        run: make contract
