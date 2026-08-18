@@ -1,0 +1,3 @@
+cli:
+  name: contractcli
+  short: Contract gate CLI for lathe-scan output

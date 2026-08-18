@@ -18,10 +18,21 @@ Run `make check` before opening a pull request. Use `make tidy` only when module
 dependencies change.
 
 `make bench` measures discovery recall against the pinned real-repository
-corpus in `bench/corpus.yaml`. It needs network access and is never part of
-`make check`; run it when changing discovery, extraction, or selection, and
-update a pin only deliberately. A `known_gap` entry that starts passing should
-be promoted to a scored entry in the same change.
+corpus in `bench/corpus.yaml`. Run it when changing discovery, extraction, or
+selection, and update a pin only deliberately. A `known_gap` entry that starts
+passing should be promoted to a scored entry in the same change.
+
+`make contract` scans the fixture under `bench/contract/` and runs `lathe`
+built from the latest upstream main commit against the result: `specsync`
+must load and stage the manifest and `codegen` must emit commands. The
+scanner mirrors Lathe's rules without importing them, so this gate is what
+catches mirror drift; run it locally before changing anything that shapes
+`sources.yaml`.
+
+Both targets need network access and never run in `make check` or on pull
+requests. The Drift workflow runs them after each merge to main, weekly, and
+on manual dispatch; a red Drift run means main drifted relative to the world,
+not that a specific diff is wrong.
 
 ## Code and Tests
 

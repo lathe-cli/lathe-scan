@@ -1,0 +1,35 @@
+openapi: 3.0.3
+info:
+  title: Billing API
+  version: "1.0.0"
+servers:
+  - url: https://api.billing.example.com
+paths:
+  /invoices:
+    get:
+      operationId: listInvoices
+      responses:
+        "200":
+          description: ok
+    post:
+      operationId: createInvoice
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "201":
+          description: created
+  /invoices/{id}:
+    get:
+      operationId: getInvoice
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok

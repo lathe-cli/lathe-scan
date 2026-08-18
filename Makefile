@@ -69,6 +69,33 @@ fmt-check: ## Fail if any file needs gofmt
 bench: build ## Recall benchmark against the pinned OSS corpus (needs network)
 	$(GO) run ./bench
 
+# ── Contract ─────────────────────────────────────────────────────────────────
+
+# The scanner mirrors Lathe's rules by hand instead of importing them, so the
+# mirror can drift. This gate scans a fixture service and hands the result to a
+# lathe built from the latest main commit: specsync must load and stage the
+# manifest, and codegen must emit commands from it. The fixture is copied to a
+# temp dir outside this repository so its own git state and .gitignore cannot
+# leak into the scan.
+LATHE_PKG    := github.com/lathe-cli/lathe/cmd/lathe
+CONTRACT_DIR := .local/contract
+
+.PHONY: contract
+
+contract: build ## Verify scan output against lathe@main (needs network)
+	@rm -rf $(CONTRACT_DIR)
+	@mkdir -p $(CONTRACT_DIR)/bin
+	GOBIN=$(abspath $(CONTRACT_DIR)/bin) GOPROXY=direct $(GO) install $(LATHE_PKG)@main
+	@svcroot=$$(mktemp -d) && \
+	cp -R bench/contract/billing-svc "$$svcroot/billing-svc" && \
+	cp -R bench/contract/app $(CONTRACT_DIR)/app && \
+	./bin/lathe-scan "$$svcroot/billing-svc" --out $(CONTRACT_DIR)/app/specs; \
+	status=$$?; rm -rf "$$svcroot"; exit $$status
+	cd $(CONTRACT_DIR)/app && $(abspath $(CONTRACT_DIR)/bin/lathe) bootstrap
+	@test -s $(CONTRACT_DIR)/app/internal/generated/billing_api/billing_api_gen.go || \
+	  { printf 'contract: codegen emitted no billing_api module\n'; exit 1; }
+	@printf '\n$(GREEN)  ✓ scan output holds against $(CYAN)lathe@main$(RESET)\n\n'
+
 # ── Maintenance ──────────────────────────────────────────────────────────────
 
 .PHONY: tidy clean
