@@ -56,11 +56,18 @@ fmt: ## Format code in place
 	$(GO) fmt ./...
 
 fmt-check: ## Fail if any file needs gofmt
-	@out=$$(gofmt -l main.go internal); \
+	@out=$$(gofmt -l main.go internal bench); \
 	if [ -n "$$out" ]; then \
 	  printf '$(BOLD)gofmt violations:$(RESET)\n%s\n' "$$out"; \
 	  exit 1; \
 	fi
+
+# ── Benchmark ────────────────────────────────────────────────────────────────
+
+.PHONY: bench
+
+bench: build ## Recall benchmark against the pinned OSS corpus (needs network)
+	$(GO) run ./bench
 
 # ── Maintenance ──────────────────────────────────────────────────────────────
 

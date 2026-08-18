@@ -126,6 +126,36 @@ func TestDiscoverSkipsTestAndSampleDirs(t *testing.T) {
 	}
 }
 
+// JVM package directories reuse fixture words as production namespace segments
+// (org.springframework.samples, com.example). Under a src/main source root
+// they are real code and must be indexed; the same names at the repo root stay
+// excluded as scaffolding.
+func TestDiscoverKeepsFixtureNamesUnderSrcMain(t *testing.T) {
+	root := t.TempDir()
+	controller := "package com.example.demo;\nimport org.springframework.web.bind.annotation.*;\n@RestController\npublic class Api {\n  @GetMapping(\"/x\")\n  public String x() { return \"x\"; }\n}\n"
+	writeFile(t, root, "src/main/java/com/example/demo/Api.java", controller)
+	writeFile(t, root, "examples/demo/Api.java", controller) // scaffolding — skipped
+	idx := indexFiles(root)
+	if len(idx.sources) != 1 || !strings.Contains(idx.sources[0], filepath.FromSlash("src/main")) {
+		t.Fatalf("sources = %v, want only the src/main file", idx.sources)
+	}
+}
+
+// A GraphQL schema that fails strict SDL validation fails the same way in
+// Lathe. The refusal must surface as a blocking gap, not an empty result.
+func TestExecuteInvalidGraphQLRaisesBlockingGap(t *testing.T) {
+	in := inputDir(t, "schema.graphql", "type Query { a: String a: String }\n")
+	out := t.TempDir()
+	err := Execute(Options{Inputs: []string{in}, Out: out})
+	var noSrc ErrNoSources
+	if err == nil || !asNoSources(err, &noSrc) {
+		t.Fatalf("want ErrNoSources, got %v", err)
+	}
+	if !hasGap(readReport(t, out).Gaps, gapParseError, true) {
+		t.Errorf("expected blocking parse-error gap, got %+v", readReport(t, out).Gaps)
+	}
+}
+
 // Same API in json+yaml or copied to a second dir → one canonical source, even
 // though bytes (and content hashes) differ.
 func TestDedupBySignature(t *testing.T) {

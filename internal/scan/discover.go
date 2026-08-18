@@ -9,19 +9,26 @@ import (
 	"strings"
 )
 
-// Dependency/build trees are skipped: specs shipped by deps are the main false
-// positives, so this is a correctness requirement, not an optimization.
-var ignoreDirs = map[string]bool{
+// Dependency, build, and generated trees are always skipped: specs shipped by
+// deps are the main false positives, so this is a correctness requirement, not
+// an optimization.
+var dependencyDirs = map[string]bool{
 	"node_modules": true, "vendor": true, ".venv": true, "venv": true,
 	"dist": true, "build": true, "target": true, ".git": true,
 	"site-packages": true, ".tox": true, ".cache": true,
-	// Test scaffolding and generated/sample trees: a spec found here is fixture
-	// data, not the repo's own API contract. Excluding them is the dominant
-	// precision win on real repos (e.g. openapi-generator ships 120+ sample specs).
+	"third_party": true, "third-party": true, "generated": true,
+}
+
+// Test scaffolding and sample trees: a spec found here is fixture data, not
+// the repo's own API contract. Excluding them is the dominant precision win on
+// real repos (e.g. openapi-generator ships 120+ sample specs) — except under a
+// src/main source root, where JVM package directories reuse these words as
+// production namespace segments (org.springframework.samples, com.example)
+// and the Maven/Gradle convention already guarantees the tree is real code.
+var fixtureDirs = map[string]bool{
 	"testdata": true, "test": true, "tests": true, "__tests__": true,
 	"e2e": true, "fixture": true, "fixtures": true,
 	"sample": true, "samples": true, "example": true, "examples": true,
-	"third_party": true, "third-party": true, "generated": true,
 }
 
 var specDirHints = map[string]bool{
@@ -59,7 +66,8 @@ func indexFiles(rootDir string) *fileIndex {
 		}
 		if d.IsDir() {
 			name := d.Name()
-			if path != rootDir && (ignoreDirs[name] || strings.HasPrefix(name, ".")) {
+			if path != rootDir && (dependencyDirs[name] || strings.HasPrefix(name, ".") ||
+				fixtureDirs[name] && !underSourceRoot(rootDir, path)) {
 				return fs.SkipDir
 			}
 			st.enter(path)
@@ -165,6 +173,12 @@ func scanInput(input, inputKey, scanPath, kindHint string, opts Options) (*input
 		b, cand := buildGraphQLSource(idx.graphql, root, git)
 		if cand != nil {
 			ir.report.Candidates = append(ir.report.Candidates, *cand)
+			// A schema that fails strict SDL validation fails identically in
+			// Lathe (same parser); an empty result must say so, not stay silent.
+			if !cand.Parsed {
+				ir.gaps = append(ir.gaps, Gap{Kind: gapParseError, Scope: "input", Ref: cand.Path,
+					Message: cand.Error, Blocking: true})
+			}
 		}
 		ir.add(b, input)
 	}
@@ -180,6 +194,12 @@ func scanInput(input, inputKey, scanPath, kindHint string, opts Options) (*input
 
 	pmSources, pmCands := buildPostmanSources(postmanFiles(idx, root), root)
 	ir.report.Candidates = append(ir.report.Candidates, pmCands...)
+	for _, c := range pmCands {
+		if !c.Parsed {
+			ir.gaps = append(ir.gaps, Gap{Kind: gapParseError, Scope: "input", Ref: c.Path,
+				Message: c.Error, Blocking: true})
+		}
+	}
 	ir.postmanCandidates = len(pmCands)
 	for _, b := range pmSources {
 		ir.add(b, input)
@@ -339,6 +359,17 @@ func probesAsSpec(data []byte) bool {
 func isYAMLFile(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
 	return ext == ".yaml" || ext == ".yml"
+}
+
+// underSourceRoot reports whether path sits below a Maven/Gradle-style
+// src/main source root inside rootDir. Fixture-named directories below it are
+// package segments of production code, not scaffolding.
+func underSourceRoot(rootDir, path string) bool {
+	rel, err := filepath.Rel(rootDir, path)
+	if err != nil {
+		return false
+	}
+	return strings.Contains("/"+filepath.ToSlash(rel), "/src/main/")
 }
 
 func isProtoFile(path string) bool {

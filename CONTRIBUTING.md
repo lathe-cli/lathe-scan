@@ -17,6 +17,12 @@ make check   # format check, vet, lint, and tests
 Run `make check` before opening a pull request. Use `make tidy` only when module
 dependencies change.
 
+`make bench` measures discovery recall against the pinned real-repository
+corpus in `bench/corpus.yaml`. It needs network access and is never part of
+`make check`; run it when changing discovery, extraction, or selection, and
+update a pin only deliberately. A `known_gap` entry that starts passing should
+be promoted to a scored entry in the same change.
+
 ## Code and Tests
 
 Follow standard Go naming and let `gofmt` handle formatting. Wrap errors with

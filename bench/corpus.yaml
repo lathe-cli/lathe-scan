@@ -1,0 +1,74 @@
+# Recall corpus: real OSS repositories with a known API surface, pinned by
+# commit so runs are comparable over time. Update a pin deliberately, never
+# implicitly. `known_gap` entries run and report but do not count toward
+# recall; they document misses the scanner does not claim to handle yet.
+repos:
+  - name: swagger-petstore
+    url: https://github.com/swagger-api/swagger-petstore
+    ref: d57941e8fe959e508796b27469b1e8bba73392dc
+    expect:
+      min_usable: 1
+      backends: [openapi3]
+
+  - name: github-graphql-schema
+    url: https://github.com/octokit/graphql-schema
+    ref: 82ff2d4780080e6929ebb95608cefa22dfa05ac7
+    known_gap: >-
+      GitHub's published schema fails strict SDL validation (duplicate field);
+      lathe uses the same gqlparser and rejects it identically, so the scan
+      reports a blocking parse-error gap instead of emitting a source
+    expect:
+      min_usable: 0
+
+  - name: googleapis
+    url: https://github.com/googleapis/googleapis
+    ref: 28ba5d15234eff44241492ca72b135e1171fc537
+    expect:
+      min_usable: 1
+      backends: [proto]
+
+  - name: fastapi-template
+    url: https://github.com/fastapi/full-stack-fastapi-template
+    ref: 162344da111e833b30892728372ab95331f06873
+    expect:
+      min_usable: 1
+      extractor: fastapi
+
+  - name: express-realworld
+    url: https://github.com/gothinkster/node-express-realworld-example-app
+    ref: 30b68e1e881462b2f4164ea09ab4c4f5699c7b0b
+    expect:
+      min_usable: 1
+      extractor: express
+
+  # Ships a Postman collection, which is a usable L1 artifact; L2 gin never
+  # runs by design (L2 only fires when no usable L1 source exists).
+  - name: gin-realworld
+    url: https://github.com/gothinkster/golang-gin-realworld-example-app
+    ref: 626c372d259472148d93303f74aa9b9a1cdcef24
+    expect:
+      min_usable: 1
+      extractor: postman
+
+  - name: spring-petclinic
+    url: https://github.com/spring-projects/spring-petclinic
+    ref: 88e37c15cf6fc8490b01bc3e8e2c800cec1ac272
+    expect:
+      min_usable: 1
+      extractor: spring
+
+  - name: flask-microblog
+    url: https://github.com/miguelgrinberg/microblog
+    ref: a975ef64864354867c88e0ed3a17ba7d17dca752
+    expect:
+      min_usable: 1
+      extractor: flask
+
+  # The explicit get/post routes are extracted; routes declared only through
+  # the resources DSL are still missing from the draft.
+  - name: rails-realworld
+    url: https://github.com/gothinkster/rails-realworld-example-app
+    ref: a2ae4fff78b3337683cea988c023281dcb5551b9
+    expect:
+      min_usable: 1
+      extractor: rails
