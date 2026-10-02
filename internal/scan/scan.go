@@ -41,9 +41,6 @@ func Execute(opts Options) error {
 	if strings.TrimSpace(opts.Out) == "" {
 		return fmt.Errorf("--out is required")
 	}
-	if opts.Name != "" && len(opts.Inputs) != 1 {
-		return fmt.Errorf("--name is only valid with a single input")
-	}
 	if opts.Prefer != "" && !preferBackends[opts.Prefer] {
 		return fmt.Errorf("--prefer %q: want one of openapi3, swagger, proto, graphql", opts.Prefer)
 	}
