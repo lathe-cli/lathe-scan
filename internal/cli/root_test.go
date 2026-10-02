@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 const specOpenAPI = `openapi: 3.0.3
@@ -94,6 +96,57 @@ func TestOutIsFileExitsWriteFailureWithAndWithoutMerge(t *testing.T) {
 	} {
 		if got := Run(args); got != exitWrite {
 			t.Errorf("Run(%v) = %d, want %d (write failure)", args, got, exitWrite)
+		}
+	}
+}
+
+func TestRunNameWithSingleRecommendation(t *testing.T) {
+	usable := repoWith(t, "api/openapi.yaml", specOpenAPI)
+	empty := t.TempDir()
+	for _, tc := range []struct {
+		name   string
+		inputs []string
+	}{
+		{"duplicate inputs", []string{usable, usable}},
+		{"one empty input", []string{empty, usable}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := filepath.Join(t.TempDir(), "out")
+			args := append(append([]string(nil), tc.inputs...), "--out", out, "--name", "custom")
+			if got := Run(args); got != exitOK {
+				t.Fatalf("Run(%v) = %d, want %d", args, got, exitOK)
+			}
+			data, err := os.ReadFile(filepath.Join(out, "sources.yaml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var manifest struct {
+				Sources map[string]any `yaml:"sources"`
+			}
+			if err := yaml.Unmarshal(data, &manifest); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := manifest.Sources["custom"]; !ok || len(manifest.Sources) != 1 {
+				t.Fatalf("want only custom source, got %v", manifest.Sources)
+			}
+		})
+	}
+}
+
+func TestRunNameRejectsOtherRecommendationCounts(t *testing.T) {
+	first := repoWith(t, "api/openapi.yaml", specOpenAPI)
+	second := repoWith(t, "api/openapi.yaml", specOpenAPI)
+	for _, inputs := range [][]string{
+		{t.TempDir(), t.TempDir()},
+		{first, second},
+	} {
+		out := filepath.Join(t.TempDir(), "out")
+		args := append(append([]string(nil), inputs...), "--out", out, "--name", "custom")
+		if got := Run(args); got != exitUsage {
+			t.Fatalf("Run(%v) = %d, want %d", args, got, exitUsage)
+		}
+		if _, err := os.Stat(out); !os.IsNotExist(err) {
+			t.Fatalf("invalid --name must not write output, got %v", err)
 		}
 	}
 }
