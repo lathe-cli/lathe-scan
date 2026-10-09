@@ -156,17 +156,16 @@ func TestExecuteInvalidGraphQLRaisesBlockingGap(t *testing.T) {
 	}
 }
 
-// Same API in json+yaml or copied to a second dir → one canonical source, even
-// though bytes (and content hashes) differ.
+// Copies in one location lineage remain one canonical source even though
+// their bytes (and content hashes) differ.
 func TestDedupBySignature(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, root, "openapi.yaml", specOpenAPI)
-	// Same operations, different bytes (title + server changed).
-	variant := strings.NewReplacer("Billing API", "Billing API v2", "api.acme.com", "api2.acme.com").Replace(specOpenAPI)
-	writeFile(t, root, "docs/openapi.yaml", variant)
+	writeFile(t, root, "docs/v1/openapi.yaml", specOpenAPI)
+	variant := strings.ReplaceAll(specOpenAPI, "description: ok", "description: success")
+	writeFile(t, root, "docs/master/openapi.yaml", variant)
 
 	cands, parsed := parseCandidates(indexFiles(root).specs, root)
-	dedupCandidates(cands, parsed)
+	dedupCandidates(cands, parsed, "")
 	nonDup := 0
 	for _, c := range cands {
 		if c.DuplicateOf == "" {
@@ -183,7 +182,7 @@ func TestDedupSignatureKeepsDistinctAPIs(t *testing.T) {
 	writeFile(t, root, "a/openapi.yaml", specOpenAPI)
 	writeFile(t, root, "b/openapi.yaml", strings.ReplaceAll(specOpenAPI, "invoices", "orders")) // different paths
 	cands, parsed := parseCandidates(indexFiles(root).specs, root)
-	dedupCandidates(cands, parsed)
+	dedupCandidates(cands, parsed, "")
 	nonDup := 0
 	for _, c := range cands {
 		if c.DuplicateOf == "" {
@@ -197,12 +196,12 @@ func TestDedupSignatureKeepsDistinctAPIs(t *testing.T) {
 
 func TestDedupByContentHash(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, root, "openapi.yaml", specOpenAPI)
-	writeFile(t, root, "docs/openapi.json", specOpenAPI) // identical content, different path
+	writeFile(t, root, "docs/openapi.yaml", specOpenAPI)
+	writeFile(t, root, "docs/openapi.json", specOpenAPI) // identical content, same lineage
 
 	files := indexFiles(root).specs
 	cands, parsed := parseCandidates(files, root)
-	dedupCandidates(cands, parsed)
+	dedupCandidates(cands, parsed, "")
 
 	nonDup := 0
 	for _, c := range cands {
