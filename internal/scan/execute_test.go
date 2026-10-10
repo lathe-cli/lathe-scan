@@ -1146,6 +1146,53 @@ func TestExecuteKeepsIndependentAPIsWithSameTitle(t *testing.T) {
 	}
 }
 
+func TestExecuteKeepsIndependentAPIsWithSameOperations(t *testing.T) {
+	cases := []struct {
+		name      string
+		adminFile string
+		sameTitle bool
+	}{
+		{"different titles", "services/admin/openapi.yaml", false},
+		{"same title", "services/admin/openapi.yaml", true},
+		{"different titles in one directory", "services/orders/admin.yaml", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			in := t.TempDir()
+			orders := strings.Replace(specOneOp, "title: Tie", "title: Orders API", 1)
+			admin := strings.Replace(specOneOp, "title: Tie", "title: Admin API", 1)
+			if c.sameTitle {
+				orders, admin = specOneOp, specOneOp
+			}
+			writeFile(t, in, "services/orders/openapi.yaml", orders)
+			writeFile(t, in, c.adminFile, admin)
+
+			out := t.TempDir()
+			if err := Execute(Options{Inputs: []string{in}, Out: out}); err != nil {
+				t.Fatal(err)
+			}
+			sources := readSources(t, filepath.Join(out, sourcesFileName))
+			if len(sources) != 2 {
+				t.Fatalf("independent APIs with the same operations collapsed into %d sources: %v", len(sources), sources)
+			}
+			report := readReport(t, out)
+			if report.Summary.Usable != 2 || len(report.Sources) != 2 {
+				t.Fatalf("report must account for both APIs: %+v", report)
+			}
+			for _, candidate := range report.Inputs[0].Candidates {
+				if candidate.DuplicateOf != "" {
+					t.Errorf("independent service %s marked duplicate of %s", candidate.Path, candidate.DuplicateOf)
+				}
+			}
+			for _, source := range report.Sources {
+				if !source.Recommended {
+					t.Errorf("independent service %s was not recommended", source.Provenance.Key)
+				}
+			}
+		})
+	}
+}
+
 func TestExecuteMergePreservesGraphQLExposeAcrossRecommendationChanges(t *testing.T) {
 	in := t.TempDir()
 	writeFile(t, in, "api.graphql", "type Query { alpha: String beta: String }\n")

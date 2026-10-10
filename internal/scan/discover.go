@@ -152,7 +152,11 @@ func scanInput(input, inputKey, scanPath, kindHint string, opts Options) (*input
 	idx := indexFiles(abs)
 
 	cands, parsedByPath := parseCandidates(specCandidateFiles(idx, root), root)
-	dedupCandidates(cands, parsedByPath)
+	repoName := ""
+	if git != nil {
+		repoName = git.repoName
+	}
+	dedupCandidates(cands, parsedByPath, repoName)
 	ir.report.Candidates = append(ir.report.Candidates, cands...)
 	for i := range cands {
 		c := &cands[i]
@@ -419,18 +423,22 @@ func parseCandidates(files []string, root string) ([]Candidate, map[string]*pars
 	return cands, parsedByPath
 }
 
-func dedupCandidates(cands []Candidate, parsedByPath map[string]*parsed) {
+func dedupCandidates(cands []Candidate, parsedByPath map[string]*parsed, repoName string) {
 	seen := map[string]string{}
 	for i := range cands {
 		c := &cands[i]
 		if !c.Parsed {
 			continue
 		}
-		// Prefer the operation-signature key so json/yaml copies of one API
-		// collapse; fall back to content hash when there are no operations.
+		// A matching operation set is only evidence of a copy within the same
+		// logical source. Independent services commonly share endpoints such as
+		// GET /health, and must reach recommendation as separate sources.
 		key := c.ContentHash
-		if p := parsedByPath[c.Path]; p != nil && p.opsig != "" {
-			key = "sig:" + p.opsig
+		if p := parsedByPath[c.Path]; p != nil {
+			if p.opsig != "" {
+				key = "sig:" + p.opsig
+			}
+			key = logicalSourceKey(specBaseName(p.title, repoName, c.Path), c.Path) + "\x00" + key
 		}
 		if key == "" {
 			continue

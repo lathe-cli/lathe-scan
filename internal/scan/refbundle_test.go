@@ -2,6 +2,7 @@ package scan
 
 import (
 	"gopkg.in/yaml.v3"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -272,6 +273,102 @@ paths:
 		}
 		if string(out) != first {
 			t.Fatalf("bundling is not deterministic; run %d differs:\n--- first ---\n%s\n--- run %d ---\n%s", i, first, i, out)
+		}
+	}
+}
+
+// Reference closures describe evidence, while the primary document determines
+// which API a candidate belongs to. Both remain observable in scanner output.
+func TestExecuteBundledSourceGroupingUsesPrimarySpec(t *testing.T) {
+	formats := []struct {
+		backend string
+		spec    string
+	}{
+		{"openapi3", `openapi: 3.0.3
+info: { title: API, version: "1" }
+paths:
+  /health:
+    get:
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: "../../REF#/components/schemas/User"
+`},
+		{"swagger", `swagger: "2.0"
+info: { title: API, version: "1" }
+paths:
+  /health:
+    get:
+      responses:
+        "200":
+          description: ok
+          schema:
+            $ref: "../../REF#/definitions/User"
+`},
+	}
+	cases := []struct {
+		name       string
+		primaries  [2]string
+		references [2]string
+		want       int
+	}{
+		{"independent APIs with shared refs", [2]string{"services/admin/api.yaml", "services/orders/api.yaml"},
+			[2]string{"common/types.yaml", "common/types.yaml"}, 2},
+		{"revisions with separate refs", [2]string{"docs/v1/api.yaml", "docs/master/api.yaml"},
+			[2]string{"aaa/types.yaml", "bbb/types.yaml"}, 1},
+	}
+	for _, format := range formats {
+		for _, c := range cases {
+			t.Run(format.backend+"/"+c.name, func(t *testing.T) {
+				in, out := t.TempDir(), t.TempDir()
+				for i, primary := range c.primaries {
+					spec := strings.ReplaceAll(format.spec, "REF", c.references[i])
+					if c.want == 1 && i == 1 {
+						// A larger current revision survives dedup and wins selection.
+						spec += "  /users:\n    get:\n      responses:\n        \"200\": { description: ok }\n"
+					}
+					writeFile(t, in, primary, spec)
+					schema := "components:\n  schemas:\n    User:\n      type: object\n      properties:\n        id: { type: integer }\n"
+					if format.backend == "swagger" {
+						schema = "definitions:\n  User:\n    type: object\n    properties:\n      id: { type: integer }\n"
+					}
+					writeFile(t, in, c.references[i], schema)
+				}
+				if err := Execute(Options{Inputs: []string{in}, Out: out}); err != nil {
+					t.Fatal(err)
+				}
+				manifest := readSources(t, filepath.Join(out, sourcesFileName))
+				report := readReport(t, out)
+				if len(manifest) != c.want || report.Summary.Usable != c.want || len(report.Sources) != 2 {
+					t.Fatalf("manifest sources = %d, usable = %d, candidates = %d; want %d, %d, 2",
+						len(manifest), report.Summary.Usable, len(report.Sources), c.want, c.want)
+				}
+				for _, source := range report.Sources {
+					if !source.Recommended {
+						if strings.Join(source.Files, ",") != "aaa/types.yaml,docs/v1/api.yaml" {
+							t.Errorf("report lost the original reference closure: %v", source.Files)
+						}
+						continue
+					}
+					if c.want == 1 && source.Provenance.Key != c.primaries[1] {
+						t.Errorf("recommended %s instead of the larger current revision", source.Provenance.Key)
+					}
+					if !hasGap(source.Gaps, gapRefBundled, false) || len(source.Files) != 1 {
+						t.Fatalf("source was not bundled: %+v", source)
+					}
+					data, err := os.ReadFile(filepath.Join(out, source.Name, source.Files[0]))
+					if err != nil {
+						t.Fatal(err)
+					}
+					parsed, err := parseSpec(data)
+					if err != nil || parsed == nil || parsed.hasExtRefs || !strings.Contains(string(data), "id:") {
+						t.Fatalf("bundled output lost its referenced schema or is not self-contained: %s (%v)", data, err)
+					}
+				}
+			})
 		}
 	}
 }
