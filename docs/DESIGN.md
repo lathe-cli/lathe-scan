@@ -38,8 +38,10 @@ kinds should be scanned per service directory.
 Candidates compete as alternatives only when they share a derived
 base name and location lineage; recognized version directories such as `v1` and
 `master` belong to the same lineage. Generic titles alone never collapse APIs
-from unrelated service directories. The report retains every usable candidate
-and `sources.yaml` receives one recommendation per group.
+from unrelated service directories. OpenAPI and Swagger location lineage follows
+the primary document, independently of the paths in its reference closure. The
+report retains every usable candidate and `sources.yaml` receives one
+recommendation per group.
 
 ## L1: Existing API Artifacts
 
